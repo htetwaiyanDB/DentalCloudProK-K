@@ -1,4 +1,4 @@
-# 🦷 DentalCloud
+# 🦷 DentalCloud For K&K
 
 **A Professional Dental Practice Management System for streamlined patient care and clinical record-keeping.**
 
