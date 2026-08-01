@@ -56,6 +56,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Make the new column immediately visible to PostgREST/Supabase API clients.
+NOTIFY pgrst, 'reload schema';
+
 COMMIT;
 
 SELECT

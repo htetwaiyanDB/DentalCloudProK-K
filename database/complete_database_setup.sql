@@ -217,11 +217,13 @@ CREATE TABLE doctors (
   specialization VARCHAR(255),
   password VARCHAR(255),
   commission_percentage DECIMAL(5,2) DEFAULT 0,
+  commission_per_visit DECIMAL(12,2) DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Doctor Schedules
 ALTER TABLE doctors ADD CONSTRAINT doctors_commission_percentage_check CHECK (commission_percentage >= 0 AND commission_percentage <= 100);
+ALTER TABLE doctors ADD CONSTRAINT doctors_commission_per_visit_check CHECK (commission_per_visit >= 0);
 CREATE TABLE doctor_schedules (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   doctor_id UUID REFERENCES doctors(id) ON DELETE CASCADE,
@@ -1784,11 +1786,26 @@ CREATE OR REPLACE FUNCTION get_applicable_commission_rate(
   p_doctor_id UUID,
   p_treatment_id UUID
 )
-RETURNS DECIMAL(5,2) AS $$
+RETURNS DECIMAL(12,2) AS $$
 DECLARE
+  v_specialization TEXT;
+  v_commission_per_visit DECIMAL(12,2);
   v_custom_rate DECIMAL(5,2);
   v_default_rate DECIMAL(5,2);
 BEGIN
+  SELECT
+    d.specialization,
+    COALESCE(d.commission_per_visit, 0),
+    COALESCE(d.commission_percentage, 0)
+  INTO v_specialization, v_commission_per_visit, v_default_rate
+  FROM doctors d
+  WHERE d.id = p_doctor_id
+  LIMIT 1;
+
+  IF v_specialization IN ('Ortho', 'Implant', 'Surgery') THEN
+    RETURN COALESCE(v_commission_per_visit, 0);
+  END IF;
+
   SELECT dtc.commission_rate
   INTO v_custom_rate
   FROM doctor_treatment_commissions dtc
@@ -1796,17 +1813,7 @@ BEGIN
     AND dtc.treatment_id = p_treatment_id
   LIMIT 1;
 
-  IF v_custom_rate IS NOT NULL THEN
-    RETURN v_custom_rate;
-  END IF;
-
-  SELECT COALESCE(d.commission_percentage, 0)
-  INTO v_default_rate
-  FROM doctors d
-  WHERE d.id = p_doctor_id
-  LIMIT 1;
-
-  RETURN COALESCE(v_default_rate, 0);
+  RETURN COALESCE(v_custom_rate, v_default_rate, 0);
 END;
 $$ LANGUAGE plpgsql;
 
