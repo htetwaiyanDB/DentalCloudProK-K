@@ -267,22 +267,12 @@ Appointments do not have a target-teeth workflow. Tooth numbers belong to treatm
 - `receiptSnapshot`: Immutable JSON snapshot used for accurate historical reprints
 - Snapshot line items can include treatments and standalone medicine sales captured at payment time
 
-### Doctor Commission (Percentage-Based Earnings)
-- `commission_percentage` on Doctor: 0-100%, set in the Doctor tab
-- When a treatment is recorded, the system looks up the treating doctor's commission_percentage
-- `doctorEarnings = treatment_cost × (commission_percentage / 100)`
-- The calculated earnings are stored in the treatments table as `doctor_earnings`
-- Visible in:
-  - **Doctor Dashboard**: Monthly Commission & Weekly Commission cards
-  - **Admin Dashboard**: Doctor Earnings (Commission) aggregated table
-  - **Admin Dashboard**: Per-Treatment Commission Breakdown for individual records
-  - **Records Tab**: Doctor Earned column per treatment
-
-### Doctor Commission (Percentage-Based Earnings)
-- `commission_percentage` on Doctor: 0-100%, set in the Doctor tab
-- When a treatment is recorded, the system looks up the treating doctor's commission_percentage
-- `doctorEarnings = treatment_cost x (commission_percentage / 100)`
-- The calculated earnings are stored in the treatments table as `doctor_earnings`
+### Doctor Commission
+- Doctor specialization is free text with common suggestions and does not determine commission behavior.
+- `commission_type` is selected per doctor in the Doctor tab: `percentage` or `fixed`.
+- Percentage commission uses `commission_percentage` (or a treatment-specific override) against collected treatment payment after material costs.
+- Fixed commission uses `commission_per_visit` once per doctor, patient, and treatment date after payment is collected.
+- Calculated payment-based earnings are snapshotted in `doctor_commission_entries` and summarized in `treatments.doctor_earnings`.
 - Visible in:
   - Doctor Dashboard: Monthly Commission & Weekly Commission cards
   - Admin Dashboard: Doctor Earnings (Commission) aggregated table

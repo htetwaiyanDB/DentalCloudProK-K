@@ -192,7 +192,7 @@ const DoctorsView: React.FC<DoctorsViewProps> = ({
                     </div>
                   )}
                   
-                  {usesFlatVisitCommission(doctor.specialization) && Number(doctor.commission_per_visit || 0) > 0 ? (
+                  {usesFlatVisitCommission(doctor.commission_type, doctor.specialization) && Number(doctor.commission_per_visit || 0) > 0 ? (
                     <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-gray-600 truncate">
                       <span className="font-medium shrink-0">Commission:</span>
                       <span className="text-green-700 font-bold">{formatCurrency(Number(doctor.commission_per_visit || 0), currency)}/visit</span>

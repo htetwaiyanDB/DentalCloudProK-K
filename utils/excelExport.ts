@@ -356,8 +356,8 @@ export const exportDoctorsToExcel = async (doctors: Doctor[]) => {
   const rows = doctors.map((doctor) => ({
     'Doctor Name': formatDoctorName(doctor.name, 'N/A'),
     Specialization: doctor.specialization || 'General',
-    'Commission %': usesFlatVisitCommission(doctor.specialization) ? 'N/A' : (doctor.commission_percentage != null ? doctor.commission_percentage : 0),
-    'Commission Per Visit': usesFlatVisitCommission(doctor.specialization) ? (doctor.commission_per_visit || 0) : 'N/A',
+    'Commission %': usesFlatVisitCommission(doctor.commission_type, doctor.specialization) ? 'N/A' : (doctor.commission_percentage != null ? doctor.commission_percentage : 0),
+    'Commission Per Visit': usesFlatVisitCommission(doctor.commission_type, doctor.specialization) ? (doctor.commission_per_visit || 0) : 'N/A',
     Phone: doctor.phone || 'N/A',
     Email: doctor.email || 'N/A',
     Schedule: doctor.schedules.length === 0

@@ -93,7 +93,7 @@ describe('treatments.getAllRecords', () => {
     expect(supabaseMock.calls).toContainEqual({
       table: 'treatments',
       action: 'select',
-      columns: '*, patients(name, balance, patient_type), doctors(name, specialization, commission_percentage, commission_per_visit)'
+      columns: '*, patients(name, balance, patient_type), doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)'
     });
     expect(supabaseMock.calls).not.toContainEqual({ action: 'limit', count: 50 });
     expect(supabaseMock.calls).toContainEqual({ action: 'eq', column: 'location_id', value: 'location-1' });

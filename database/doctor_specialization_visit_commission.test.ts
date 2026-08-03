@@ -11,7 +11,7 @@ describe('Doctor specialization visit commission schema', () => {
   it('keeps fresh installations aligned with the additive migration', () => {
     expect(completeSetup).toMatch(/commission_per_visit DECIMAL\(12,2\) DEFAULT 0/);
     expect(completeSetup).toContain('doctors_commission_per_visit_check');
-    expect(completeSetup).toContain("v_specialization IN ('Ortho', 'Implant', 'Surgery')");
+    expect(completeSetup).toContain("IF v_commission_type = 'fixed' THEN");
     expect(completeSetup).toContain('RETURN COALESCE(v_commission_per_visit, 0);');
   });
 

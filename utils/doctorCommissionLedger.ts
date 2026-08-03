@@ -1,4 +1,5 @@
 import { usesFlatVisitCommission } from './doctorCommission';
+import type { DoctorCommissionType } from './doctorCommission';
 
 export interface CommissionTreatmentInput {
   id: string;
@@ -8,6 +9,7 @@ export interface CommissionTreatmentInput {
   date: string;
   cost: number;
   materialCost?: number;
+  commissionType?: DoctorCommissionType | string | null;
   specialization?: string | null;
   commissionPercentage?: number | null;
   commissionPerVisit?: number | null;
@@ -160,6 +162,21 @@ export const calculateCommissionLedgerEntries = (
     treatments.map((treatment) => [treatment.id, Math.max(0, Number(treatment.materialCost || 0))])
   );
   const flatCandidates = new Map<string, Array<TreatmentPaymentAllocation & { treatment: CommissionTreatmentInput }>>();
+  const allocationKeys = new Set(allocations.map((allocation) => `${allocation.paymentId}|${allocation.treatmentId}`));
+  const orphanedFlatVisitKeys = new Set(existingEntries
+    .filter((entry) => entry.calculationMode === 'flat_visit' && entry.visitKey && !allocationKeys.has(`${entry.paymentId}|${entry.treatmentId}`))
+    .map((entry) => entry.visitKey as string));
+  const orphanedFlatTargetByVisit = new Map<string, string>();
+  [...allocations]
+    .sort((a, b) => a.paymentDate.localeCompare(b.paymentDate) || a.paymentId.localeCompare(b.paymentId) || a.treatmentId.localeCompare(b.treatmentId))
+    .forEach((allocation) => {
+      const treatment = treatmentById.get(allocation.treatmentId);
+      if (!treatment?.doctorId) return;
+      const visitKey = `${treatment.doctorId}|${treatment.patientId}|${treatment.date}`;
+      if (orphanedFlatVisitKeys.has(visitKey) && !orphanedFlatTargetByVisit.has(visitKey)) {
+        orphanedFlatTargetByVisit.set(visitKey, `${allocation.paymentId}|${allocation.treatmentId}`);
+      }
+    });
 
   [...allocations]
     .sort((a, b) => a.paymentDate.localeCompare(b.paymentDate) || a.paymentId.localeCompare(b.paymentId))
@@ -167,15 +184,23 @@ export const calculateCommissionLedgerEntries = (
       const treatment = treatmentById.get(allocation.treatmentId);
       if (!treatment?.doctorId || allocation.amount <= 0) return;
       const visitKey = `${treatment.doctorId}|${treatment.patientId}|${treatment.date}`;
+      const allocationKey = `${allocation.paymentId}|${allocation.treatmentId}`;
+      const existing = existingByAllocation.get(allocationKey);
+      const carriesOrphanedFlatSnapshot = orphanedFlatTargetByVisit.get(visitKey) === allocationKey;
 
-      if (usesFlatVisitCommission(treatment.specialization)) {
+      // Existing ledger rows are immutable rate/mode snapshots. A later doctor
+      // setting change applies to new payments, not previously earned amounts.
+      if (
+        existing?.calculationMode === 'flat_visit' ||
+        carriesOrphanedFlatSnapshot ||
+        (!existing && usesFlatVisitCommission(treatment.commissionType, treatment.specialization))
+      ) {
         const candidates = flatCandidates.get(visitKey) || [];
         candidates.push({ ...allocation, treatment });
         flatCandidates.set(visitKey, candidates);
         return;
       }
 
-      const existing = existingByAllocation.get(`${allocation.paymentId}|${allocation.treatmentId}`);
       const rate = existing?.calculationMode === 'percentage'
         ? Number(existing.commissionRate || 0)
         : Number(treatment.customCommissionPercentage ?? treatment.commissionPercentage ?? 0);

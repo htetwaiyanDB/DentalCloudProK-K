@@ -10,7 +10,7 @@ import { findInvalidTeeth } from '../utils/toothNumbering';
 import { getPaymentHeaderMethod, normalizePaymentAllocations, normalizePaymentMethod, validatePaymentAllocations } from '../utils/paymentMethods';
 import { normalizePaymentReceiptSnapshot } from '../utils/paymentReceipt';
 import { DEFAULT_RECEIPT_PREFERENCES, normalizeReceiptPreferences } from '../utils/receiptPreferences';
-import { usesFlatVisitCommission } from '../utils/doctorCommission';
+import { resolveDoctorCommissionType, usesFlatVisitCommission } from '../utils/doctorCommission';
 import { allocateCommissionablePayments, calculateCommissionLedgerEntries } from '../utils/doctorCommissionLedger';
 import { enumValue, finiteNumber, strictDateString, trimOptional, trimRequired } from '../utils/validation';
 import { buildPatientCreatedAt } from '../utils/patientCreationDate';
@@ -116,10 +116,19 @@ const getPaymentReceiptTreatmentIds = (payment: any): string[] => {
 };
 
 const recalculatePatientDoctorCommissions = async (patientId: string): Promise<void> => {
-  let { data: treatmentRows, error: treatmentError } = await supabase
+  let { data: treatmentRows, error: treatmentError }: { data: any[] | null; error: any } = await supabase
     .from('treatments')
-    .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, doctors(specialization, commission_percentage, commission_per_visit)')
+    .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
     .eq('patient_id', patientId);
+
+  if (treatmentError && isMissingColumnError(treatmentError, 'commission_type')) {
+    const fallback = await supabase
+      .from('treatments')
+      .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, doctors(specialization, commission_percentage, commission_per_visit)')
+      .eq('patient_id', patientId);
+    treatmentRows = fallback.data;
+    treatmentError = fallback.error;
+  }
 
   if (treatmentError && isMissingColumnError(treatmentError, 'treatment_type_id')) {
     const fallback = await supabase
@@ -175,6 +184,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     date: row.date,
     cost: Math.max(0, Number(row.cost || 0)),
     materialCost: materialByTreatment[row.id]?.totalAmount || 0,
+    commissionType: row.doctors?.commission_type,
     specialization: row.doctors?.specialization,
     commissionPercentage: Number(row.doctors?.commission_percentage || 0),
     commissionPerVisit: Number(row.doctors?.commission_per_visit || 0),
@@ -791,6 +801,7 @@ const mapDoctor = (doc: any): Doctor => {
     email: doc.email,
     phone: doc.phone,
     specialization: doc.specialization,
+    commission_type: resolveDoctorCommissionType(doc.commission_type, doc.specialization),
     commission_percentage: doc.commission_percentage ?? 0,
     commission_per_visit: doc.commission_per_visit ?? 0,
     schedules: (doc.doctor_schedules || []).map((sched: any) => ({
@@ -3258,9 +3269,19 @@ export const api = {
     getHistory: async (patientId: string): Promise<ClinicalRecord[]> => {
       let { data, error } = await supabase
         .from('treatments')
-        .select('*, doctors(name, specialization, commission_percentage, commission_per_visit)')
+        .select('*, doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)')
         .eq('patient_id', patientId)
         .order('date', { ascending: false });
+
+      if (error && isMissingColumnError(error, 'commission_type')) {
+        const fallback = await supabase
+          .from('treatments')
+          .select('*, doctors(name, specialization, commission_percentage, commission_per_visit)')
+          .eq('patient_id', patientId)
+          .order('date', { ascending: false });
+        data = fallback.data;
+        error = fallback.error;
+      }
 
       if (error && isOptionalRelationAccessError(error, ['doctors'])) {
         const fallback = await supabase
@@ -3288,15 +3309,16 @@ export const api = {
                 doctorId: rec.doctor_id,
                 paymentDate: rec.date,
                 treatmentDate: rec.date,
-                calculationMode: usesFlatVisitCommission(rec.doctors?.specialization) ? 'flat_visit' : 'percentage',
+                calculationMode: usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? 'flat_visit' : 'percentage',
                 allocatedPayment: Number(rec.cost || 0),
-                commissionRate: Number(rec.doctors?.commission_percentage || rec.doctors?.commission_per_visit || 0),
+                commissionRate: Number((usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? rec.doctors?.commission_per_visit : rec.doctors?.commission_percentage) || 0),
                 earnings: Number(rec.doctor_earnings || 0)
               }]
             : []
         ),
         doctor_name: rec.doctors?.name || undefined,
         doctor_specialization: rec.doctors?.specialization || null,
+        doctor_commission_type: rec.doctors?.commission_type ? resolveDoctorCommissionType(rec.doctors.commission_type, rec.doctors?.specialization) : null,
         doctor_commission_percentage: rec.doctors?.commission_percentage !== undefined ? Number(rec.doctors.commission_percentage || 0) : null,
         doctor_commission_per_visit: rec.doctors?.commission_per_visit !== undefined ? Number(rec.doctors.commission_per_visit || 0) : null
       }));
@@ -3451,7 +3473,7 @@ export const api = {
       try {
         let query = supabase
           .from('treatments')
-          .select('*, patients(name, balance, patient_type), doctors(name, specialization, commission_percentage, commission_per_visit)')
+          .select('*, patients(name, balance, patient_type), doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)')
           .order('date', { ascending: false });
 
         const limit = options?.limit === undefined ? 50 : options.limit;
@@ -3466,6 +3488,18 @@ export const api = {
         const initialResult = await query;
         let data: any[] | null = initialResult.data;
         let error: any = initialResult.error;
+
+        if (error && isMissingColumnError(error, 'commission_type')) {
+          let compatibilityQuery = supabase
+            .from('treatments')
+            .select('*, patients(name, balance, patient_type), doctors(name, specialization, commission_percentage, commission_per_visit)')
+            .order('date', { ascending: false });
+          if (typeof limit === 'number' && limit > 0) compatibilityQuery = compatibilityQuery.limit(limit);
+          if (locationId) compatibilityQuery = compatibilityQuery.eq('location_id', locationId);
+          const compatibilityResult = await compatibilityQuery;
+          data = compatibilityResult.data;
+          error = compatibilityResult.error;
+        }
 
         if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
           let fallbackQuery = supabase
@@ -3504,9 +3538,9 @@ export const api = {
                   doctorId: rec.doctor_id,
                   paymentDate: rec.date,
                   treatmentDate: rec.date,
-                  calculationMode: usesFlatVisitCommission(rec.doctors?.specialization) ? 'flat_visit' : 'percentage',
+                  calculationMode: usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? 'flat_visit' : 'percentage',
                   allocatedPayment: Number(rec.cost || 0),
-                  commissionRate: Number(rec.doctors?.commission_percentage || rec.doctors?.commission_per_visit || 0),
+                  commissionRate: Number((usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? rec.doctors?.commission_per_visit : rec.doctors?.commission_percentage) || 0),
                   earnings: Number(rec.doctor_earnings || 0)
                 }]
               : []
@@ -3516,6 +3550,7 @@ export const api = {
           patient_balance: Number(rec.patients?.balance || 0),
           doctor_name: rec.doctors?.name || undefined,
           doctor_specialization: rec.doctors?.specialization || null,
+          doctor_commission_type: rec.doctors?.commission_type ? resolveDoctorCommissionType(rec.doctors.commission_type, rec.doctors?.specialization) : null,
           doctor_commission_percentage: rec.doctors?.commission_percentage !== undefined ? Number(rec.doctors.commission_percentage || 0) : null,
           doctor_commission_per_visit: rec.doctors?.commission_per_visit !== undefined ? Number(rec.doctors.commission_per_visit || 0) : null
         }));
@@ -3931,14 +3966,17 @@ export const api = {
           email: trimmedEmail || null,
           phone: data.phone,
           specialization: data.specialization,
-          password: trimmedPassword || null,
-          commission_percentage: data.commission_percentage ?? 0,
-          commission_per_visit: usesFlatVisitCommission(data.specialization) ? Number(data.commission_per_visit || 0) : 0
+          password: trimmedPassword || null
         })
         .select()
         .single();
 
-      if (doctorError) throw new Error(doctorError.message);
+      if (doctorError) {
+        if (isMissingColumnError(doctorError, 'commission_type')) {
+          throw new Error('Doctor commission settings are not installed yet. Run database/configurable_doctor_commission_migration.sql before saving doctors.');
+        }
+        throw new Error(doctorError.message);
+      }
 
       if (trimmedPassword) {
         try {
@@ -4022,7 +4060,7 @@ export const api = {
     update: async (id: string, data: Partial<Doctor> | any): Promise<Doctor> => {
       const { data: existingDoctor, error: existingDoctorError } = await supabase
         .from('doctors')
-        .select('email, location_id')
+        .select('email, location_id, specialization, commission_type')
         .eq('id', id)
         .single();
 
@@ -4069,12 +4107,6 @@ export const api = {
         phone: data.phone,
         specialization: data.specialization
       };
-      if (data.commission_percentage !== undefined) {
-        doctorUpdatePayload.commission_percentage = data.commission_percentage;
-      }
-      if (data.commission_per_visit !== undefined) {
-        doctorUpdatePayload.commission_per_visit = usesFlatVisitCommission(data.specialization) ? Number(data.commission_per_visit || 0) : 0;
-      }
       if (trimmedPassword) {
         doctorUpdatePayload.password = trimmedPassword;
       }
@@ -4084,7 +4116,12 @@ export const api = {
         .update(doctorUpdatePayload)
         .eq('id', id);
 
-      if (doctorError) throw new Error(doctorError.message);
+      if (doctorError) {
+        if (isMissingColumnError(doctorError, 'commission_type')) {
+          throw new Error('Doctor commission settings are not installed yet. Run database/configurable_doctor_commission_migration.sql before saving doctors.');
+        }
+        throw new Error(doctorError.message);
+      }
       if (hasLocationAssignments) {
         await saveDoctorLocations(id, locationIds);
       }
@@ -4323,29 +4360,36 @@ export const api = {
         treatment_name: row.treatment_types?.name || undefined
       }));
     },
-    replaceForDoctor: async (doctorId: string, commissions: DoctorTreatmentCommission[]): Promise<void> => {
+    replaceForDoctor: async (
+      doctorId: string,
+      commissionType: 'percentage' | 'fixed',
+      commissionPercentage: number,
+      commissionPerVisit: number,
+      commissions: DoctorTreatmentCommission[],
+      actor: { userId: string; authToken: string }
+    ): Promise<void> => {
       const normalized = commissions
         .filter((entry) => entry.treatment_id)
         .map((entry) => ({
-          doctor_id: doctorId,
           treatment_id: entry.treatment_id,
           commission_rate: Number(entry.commission_rate)
         }));
 
-      const { error: deleteError } = await supabase
-        .from('doctor_treatment_commissions')
-        .delete()
-        .eq('doctor_id', doctorId);
-
-      if (deleteError) throw new Error(deleteError.message);
-
-      if (normalized.length === 0) return;
-
-      const { error: upsertError } = await supabase
-        .from('doctor_treatment_commissions')
-        .upsert(normalized, { onConflict: 'doctor_id,treatment_id' });
-
-      if (upsertError) throw new Error(upsertError.message);
+      const { error } = await supabase.rpc('configure_doctor_commission', {
+        p_doctor_id: doctorId,
+        p_commission_type: commissionType,
+        p_commission_percentage: commissionPercentage,
+        p_commission_per_visit: commissionPerVisit,
+        p_commissions: normalized,
+        p_user_id: actor.userId,
+        p_session_token: actor.authToken
+      });
+      if (error) {
+        if (isMissingRpcError(error, 'configure_doctor_commission')) {
+          throw new Error('Transactional doctor commission saving is not installed. Run database/configurable_doctor_commission_migration.sql before saving custom rates.');
+        }
+        throw new Error(error.message);
+      }
     },
     getApplicableRate: async (doctorId: string, treatmentId: string): Promise<number> => {
       const { data, error } = await supabase.rpc('get_applicable_commission_rate', {

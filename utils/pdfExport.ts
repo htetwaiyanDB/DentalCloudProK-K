@@ -411,7 +411,7 @@ export const exportRecallsCancelsToPDF = (
     doc.text(`${section.title} (${section.rows.length})`, 14, startY);
     autoTable(doc, {
       startY: startY + 4,
-      head: tableHeaders,
+      head: tableHeaders.map((row) => Array.from(row)),
       body: section.rows.length > 0 ? tableBody(section.rows) : [['No records', '', '', '', '', '', '', '', '', '', '', '']],
       theme: 'grid',
       headStyles: {
@@ -556,7 +556,7 @@ export const exportDoctorsToPDF = (doctors: Doctor[]) => {
     body: exportDoctors.map(doctor => [
       formatDoctorName(doctor.name, 'N/A'),
       doctor.specialization || 'General',
-      usesFlatVisitCommission(doctor.specialization) ? `${doctor.commission_per_visit || 0}/visit` : (doctor.commission_percentage != null ? `${doctor.commission_percentage}%` : '0%'),
+      usesFlatVisitCommission(doctor.commission_type, doctor.specialization) ? `${doctor.commission_per_visit || 0}/visit` : (doctor.commission_percentage != null ? `${doctor.commission_percentage}%` : '0%'),
       doctor.phone || 'N/A',
       doctor.email || 'N/A'
     ]),

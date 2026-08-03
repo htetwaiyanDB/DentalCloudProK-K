@@ -167,6 +167,48 @@ describe('doctor commission ledger', () => {
     expect(entries[0].earnings).toBe(15_000);
   });
 
+  it('uses the selected mode independently of specialization', () => {
+    const fixedGeneral = treatment({ commissionType: 'fixed', specialization: 'General', commissionPerVisit: 12_000 });
+    const percentageSurgery = treatment({ id: 'treatment-2', commissionType: 'percentage', specialization: 'Surgery', commissionPercentage: 10 });
+    const allocations = allocateCommissionablePayments([fixedGeneral, percentageSurgery], [{
+      id: 'payment-1', patientId: 'patient-1', date: '2026-07-01', commissionableAmount: 1_000_000,
+      treatmentIds: ['treatment-1', 'treatment-2']
+    }]);
+
+    expect(calculateCommissionLedgerEntries([fixedGeneral, percentageSurgery], allocations)).toEqual([
+      expect.objectContaining({ treatmentId: 'treatment-1', calculationMode: 'flat_visit', earnings: 12_000 }),
+      expect.objectContaining({ treatmentId: 'treatment-2', calculationMode: 'percentage', earnings: 50_000 })
+    ]);
+  });
+
+  it('preserves a percentage snapshot after the doctor changes to fixed mode', () => {
+    const treatments = [treatment({ commissionType: 'fixed', commissionPerVisit: 25_000, commissionPercentage: 20 })];
+    const allocations = allocateCommissionablePayments(treatments, [{
+      id: 'payment-1', patientId: 'patient-1', date: '2026-07-01', commissionableAmount: 100_000,
+      treatmentIds: ['treatment-1']
+    }]);
+
+    expect(calculateCommissionLedgerEntries(treatments, allocations, [{
+      paymentId: 'payment-1', treatmentId: 'treatment-1', calculationMode: 'percentage', commissionRate: 10
+    }])[0]).toMatchObject({ calculationMode: 'percentage', commissionRate: 10, earnings: 10_000 });
+  });
+
+  it('preserves an existing flat snapshot but uses percentage for a new payment after the mode changes', () => {
+    const treatments = [treatment({ cost: 200_000, commissionType: 'percentage', commissionPercentage: 20 })];
+    const allocations = allocateCommissionablePayments(treatments, [
+      { id: 'payment-1', patientId: 'patient-1', date: '2026-07-01', commissionableAmount: 100_000, treatmentIds: ['treatment-1'] },
+      { id: 'payment-2', patientId: 'patient-1', date: '2026-07-02', commissionableAmount: 100_000, treatmentIds: ['treatment-1'] }
+    ]);
+
+    expect(calculateCommissionLedgerEntries(treatments, allocations, [{
+      paymentId: 'payment-1', treatmentId: 'treatment-1', calculationMode: 'flat_visit', commissionRate: 15_000,
+      visitKey: 'doctor-1|patient-1|2026-06-15'
+    }])).toEqual([
+      expect.objectContaining({ paymentId: 'payment-1', calculationMode: 'flat_visit', commissionRate: 15_000, earnings: 15_000 }),
+      expect.objectContaining({ paymentId: 'payment-2', calculationMode: 'percentage', commissionRate: 20, earnings: 20_000 })
+    ]);
+  });
+
   it('recalculates a corrected payment amount without changing the snapshotted rate', () => {
     const treatments = [treatment({ commissionPercentage: 25 })];
     const correctedAllocations = allocateCommissionablePayments(treatments, [{
