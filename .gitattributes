@@ -1,0 +1,8 @@
+# ============================================================
+# Client-specific paths for K&K Dental Clinic Production.
+# On ANY merge conflict, keep the K&K (ours) version — never
+# allow upstream/feature syncs to clobber client assets/config.
+# ============================================================
+public/** merge=keep-ours
+services/supabase.ts merge=keep-ours
+README.md merge=keep-ours
