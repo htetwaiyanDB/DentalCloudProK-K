@@ -1,5 +1,4 @@
-import { usesFlatVisitCommission } from './doctorCommission';
-import type { DoctorCommissionType } from './doctorCommission';
+import { usesFlatVisitCommission, type DoctorCommissionType } from './doctorCommission';
 
 export interface CommissionTreatmentInput {
   id: string;
@@ -55,6 +54,33 @@ export interface CalculatedCommissionEntry extends TreatmentPaymentAllocation {
 
 const roundMoney = (amount: number): number => Math.round(amount * 100) / 100;
 
+const toNonNegativeFiniteNumber = (value: unknown): number => {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? Math.max(0, numericValue) : 0;
+};
+
+const toPercentageRate = (value: unknown): number => (
+  Math.min(100, toNonNegativeFiniteNumber(value))
+);
+
+// Percentage commission is paid only from the amount left after every cost
+// recorded for the treatment (both material and lab) has been recovered.
+// Applying this per payment also makes partial payments deterministic: the
+// cost is deducted once, from the earliest collected amount(s).
+const calculatePercentageCommissionBase = (
+  allocatedPayment: number,
+  remainingTreatmentCost: number
+): { materialDeduction: number; commissionBase: number } => {
+  const safeAllocation = toNonNegativeFiniteNumber(allocatedPayment);
+  const safeCost = toNonNegativeFiniteNumber(remainingTreatmentCost);
+  const materialDeduction = Math.min(safeCost, safeAllocation);
+
+  return {
+    materialDeduction: roundMoney(materialDeduction),
+    commissionBase: roundMoney(Math.max(0, safeAllocation - materialDeduction))
+  };
+};
+
 const byPaymentOrder = (a: CommissionPaymentInput, b: CommissionPaymentInput) => (
   a.date.localeCompare(b.date) ||
   String(a.createdAt || '').localeCompare(String(b.createdAt || '')) ||
@@ -87,11 +113,17 @@ export const allocateCommissionablePayments = (
     let amountLeft = Math.max(0, Number(payment.commissionableAmount || 0));
     if (amountLeft <= 0) return;
 
-    const explicitTreatments = Array.from(new Set(payment.treatmentIds || []))
+    const explicitTreatmentIds = Array.from(new Set(payment.treatmentIds || []));
+    const explicitTreatments = explicitTreatmentIds
       .map((id) => treatmentById.get(id))
       .filter((treatment): treatment is CommissionTreatmentInput => (
         !!treatment && treatment.patientId === payment.patientId
       ));
+
+    // Explicit links must never silently become an unlinked balance payment or
+    // be partially redistributed within a scoped dataset. This matters for
+    // location/date-scoped reports where one referenced treatment may be absent.
+    if (explicitTreatments.length !== explicitTreatmentIds.length) return;
 
     if (explicitTreatments.length > 0) {
       const eligible = explicitTreatments.filter((treatment) => (remainingByTreatment.get(treatment.id) || 0) > 0);
@@ -157,10 +189,32 @@ export const calculateCommissionLedgerEntries = (
   const existingByAllocation = new Map(
     existingEntries.map((entry) => [`${entry.paymentId}|${entry.treatmentId}`, entry])
   );
-  const percentageRows: CalculatedCommissionEntry[] = [];
-  const materialRemainingByTreatment = new Map(
-    treatments.map((treatment) => [treatment.id, Math.max(0, Number(treatment.materialCost || 0))])
+  const existingModeByVisit = new Map<string, ExistingCommissionEntryInput['calculationMode']>();
+  existingEntries.forEach((entry) => {
+    if (!entry.visitKey) return;
+    const existingMode = existingModeByVisit.get(entry.visitKey);
+    if (existingMode && existingMode !== entry.calculationMode) {
+      throw new Error(`Conflicting historical commission modes for visit ${entry.visitKey}.`);
+    }
+    existingModeByVisit.set(entry.visitKey, entry.calculationMode);
+  });
+  const existingPercentageByVisitAndTreatment = new Map(
+    existingEntries
+      .filter((entry) => entry.calculationMode === 'percentage' && entry.visitKey)
+      .map((entry) => [`${entry.visitKey}|${entry.treatmentId}`, entry])
   );
+  const resolveTreatmentMode = (treatment: CommissionTreatmentInput): ExistingCommissionEntryInput['calculationMode'] =>
+    usesFlatVisitCommission({
+      commissionType: treatment.commissionType,
+      specialization: treatment.specialization
+    }) ? 'flat_visit' : 'percentage';
+  const percentageRows: CalculatedCommissionEntry[] = [];
+  const percentageCandidates: Array<TreatmentPaymentAllocation & {
+    treatment: CommissionTreatmentInput;
+    rate: number;
+    visitKey: string;
+  }> = [];
+  const percentageTreatmentIds = new Set<string>();
   const flatCandidates = new Map<string, Array<TreatmentPaymentAllocation & { treatment: CommissionTreatmentInput }>>();
   const allocationKeys = new Set(allocations.map((allocation) => `${allocation.paymentId}|${allocation.treatmentId}`));
   const orphanedFlatVisitKeys = new Set(existingEntries
@@ -184,44 +238,131 @@ export const calculateCommissionLedgerEntries = (
       const treatment = treatmentById.get(allocation.treatmentId);
       if (!treatment?.doctorId || allocation.amount <= 0) return;
       const visitKey = `${treatment.doctorId}|${treatment.patientId}|${treatment.date}`;
-      const allocationKey = `${allocation.paymentId}|${allocation.treatmentId}`;
-      const existing = existingByAllocation.get(allocationKey);
-      const carriesOrphanedFlatSnapshot = orphanedFlatTargetByVisit.get(visitKey) === allocationKey;
+      const exactExisting = existingByAllocation.get(`${allocation.paymentId}|${allocation.treatmentId}`);
+      const existing = exactExisting
+        || existingPercentageByVisitAndTreatment.get(`${visitKey}|${allocation.treatmentId}`);
+      // Existing rows are immutable rate/mode snapshots. A later doctor setting
+      // change applies to NEW payments, not previously earned amounts.
+      const calculationMode = exactExisting?.calculationMode
+        || (orphanedFlatTargetByVisit.get(visitKey) === `${allocation.paymentId}|${allocation.treatmentId}`
+          ? 'flat_visit'
+          : resolveTreatmentMode(treatment));
 
-      // Existing ledger rows are immutable rate/mode snapshots. A later doctor
-      // setting change applies to new payments, not previously earned amounts.
-      if (
-        existing?.calculationMode === 'flat_visit' ||
-        carriesOrphanedFlatSnapshot ||
-        (!existing && usesFlatVisitCommission(treatment.commissionType, treatment.specialization))
-      ) {
+      if (calculationMode === 'flat_visit') {
         const candidates = flatCandidates.get(visitKey) || [];
         candidates.push({ ...allocation, treatment });
         flatCandidates.set(visitKey, candidates);
         return;
       }
 
-      const rate = existing?.calculationMode === 'percentage'
+      const rawRate = existing?.calculationMode === 'percentage'
         ? Number(existing.commissionRate || 0)
         : Number(treatment.customCommissionPercentage ?? treatment.commissionPercentage ?? 0);
-      const materialRemaining = materialRemainingByTreatment.get(treatment.id) || 0;
-      const materialDeduction = Math.min(materialRemaining, allocation.amount);
-      const commissionBase = Math.max(0, allocation.amount - materialDeduction);
-      materialRemainingByTreatment.set(treatment.id, roundMoney(materialRemaining - materialDeduction));
+      const rate = toPercentageRate(rawRate);
+      percentageCandidates.push({ ...allocation, treatment, rate, visitKey });
+      percentageTreatmentIds.add(treatment.id);
+    });
 
+  const percentageCandidatesByVisit = new Map<string, typeof percentageCandidates>();
+  percentageCandidates.forEach((candidate) => {
+    const candidates = percentageCandidatesByVisit.get(candidate.visitKey) || [];
+    candidates.push(candidate);
+    percentageCandidatesByVisit.set(candidate.visitKey, candidates);
+  });
+
+  percentageCandidatesByVisit.forEach((visitCandidates) => {
+    const rates = new Set(visitCandidates.map((candidate) => candidate.rate));
+
+    if (rates.size === 1) {
+      const rate = visitCandidates[0].rate;
+      const sample = visitCandidates[0].treatment;
+      const visitMaterialCost = treatments.reduce((sum, treatment) => {
+        const sameVisit = treatment.doctorId === sample.doctorId
+          && treatment.patientId === sample.patientId
+          && treatment.date === sample.date
+          && percentageTreatmentIds.has(treatment.id);
+        if (!sameVisit) return sum;
+
+        const treatmentCandidate = visitCandidates.find(
+          (candidate) => candidate.treatment.id === treatment.id
+        );
+        const treatmentRate = treatmentCandidate?.rate ?? toPercentageRate(
+          treatment.customCommissionPercentage ?? treatment.commissionPercentage ?? 0
+        );
+        return treatmentRate === rate
+          ? sum + toNonNegativeFiniteNumber(treatment.materialCost)
+          : sum;
+      }, 0);
+      const visitCollected = roundMoney(visitCandidates.reduce(
+        (sum, candidate) => sum + toNonNegativeFiniteNumber(candidate.amount),
+        0
+      ));
+      const visitCommissionBase = roundMoney(Math.max(0, visitCollected - visitMaterialCost));
+      const visitEarnings = roundMoney(visitCommissionBase * (rate / 100));
+      let distributedBase = 0;
+      let distributedEarnings = 0;
+
+      visitCandidates.forEach((candidate, index) => {
+        const { treatment, rate: _candidateRate, visitKey, ...allocation } = candidate;
+        const isLast = index === visitCandidates.length - 1;
+        const share = visitCollected > 0 ? candidate.amount / visitCollected : 0;
+        const commissionBase = isLast
+          ? roundMoney(visitCommissionBase - distributedBase)
+          : roundMoney(visitCommissionBase * share);
+        const earnings = isLast
+          ? roundMoney(visitEarnings - distributedEarnings)
+          : roundMoney(visitEarnings * share);
+        distributedBase = roundMoney(distributedBase + commissionBase);
+        distributedEarnings = roundMoney(distributedEarnings + earnings);
+
+        percentageRows.push({
+          ...allocation,
+          doctorId: treatment.doctorId as string,
+          patientId: treatment.patientId,
+          treatmentDate: treatment.date,
+          visitKey,
+          calculationMode: 'percentage',
+          commissionRate: rate,
+          materialDeduction: roundMoney(Math.max(0, candidate.amount - commissionBase)),
+          commissionBase,
+          earnings
+        });
+      });
+      return;
+    }
+
+    const materialRemainingByTreatment = new Map<string, number>();
+    visitCandidates.forEach((candidate) => {
+      const { treatment, rate, visitKey, ...allocation } = candidate;
+      if (!materialRemainingByTreatment.has(treatment.id)) {
+        materialRemainingByTreatment.set(
+          treatment.id,
+          toNonNegativeFiniteNumber(treatment.materialCost)
+        );
+      }
+      const materialRemaining = materialRemainingByTreatment.get(treatment.id) || 0;
+      const { materialDeduction, commissionBase } = calculatePercentageCommissionBase(
+        candidate.amount,
+        materialRemaining
+      );
+      materialRemainingByTreatment.set(
+        treatment.id,
+        roundMoney(materialRemaining - materialDeduction)
+      );
       percentageRows.push({
         ...allocation,
-        doctorId: treatment.doctorId,
+        doctorId: treatment.doctorId as string,
         patientId: treatment.patientId,
         treatmentDate: treatment.date,
         visitKey,
         calculationMode: 'percentage',
         commissionRate: rate,
-        materialDeduction: roundMoney(materialDeduction),
-        commissionBase: roundMoney(commissionBase),
+        materialDeduction,
+        commissionBase,
         earnings: roundMoney(commissionBase * (rate / 100))
       });
     });
+  });
 
   const flatRows: CalculatedCommissionEntry[] = [];
   flatCandidates.forEach((candidates, visitKey) => {
@@ -241,9 +382,10 @@ export const calculateCommissionLedgerEntries = (
       ? sorted.find((candidate) => candidate.paymentId === existing.paymentId && candidate.treatment.id === existing.treatmentId) || sorted[0]
       : sorted[0];
     if (!selected?.treatment.doctorId) return;
-    const flatAmount = existing
+    const rawFlatAmount = existing
       ? Number(existing.commissionRate || 0)
       : Math.max(0, Number(selected.treatment.commissionPerVisit || 0));
+    const flatAmount = toNonNegativeFiniteNumber(rawFlatAmount);
 
     flatRows.push({
       paymentId: selected.paymentId,

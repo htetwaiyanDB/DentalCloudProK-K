@@ -4,7 +4,7 @@ import { buildMonthlyReport, chunkMonthlyReportPatientIds, groupMonthlyReportDet
 
 const record = (overrides: Partial<MonthlyReportSourceRecord> = {}): MonthlyReportSourceRecord => ({
   id: 'treatment-1', location_id: 'location-1', patient_id: 'patient-1', patient_name: 'Aye Aye',
-  patient_age: 35, patient_phone: '0912345', patient_city: 'Yangon', patient_type: 'Walk-in',
+  patient_age: 35, patient_phone: '0912345', patient_city: 'Yangon', patient_township: 'Bahan', patient_type: 'Walk-in',
   doctor_name: 'Doctor One', teeth: [], description: 'Crown', cost: 100, doctorEarnings: 20, date: '2026-07-10',
   ...overrides
 });
@@ -30,7 +30,7 @@ describe('monthly report', () => {
 
   it('calculates payment, treatment balance, total cost, and production-based net profit', () => {
     const report = buildMonthlyReport({ records: [record()], payments: [payment()], costSummaries: { 'treatment-1': costs() } });
-    expect(report.rows[0]).toMatchObject({ cost: 100, payment: 60, balance: 40, materialCost: 10, labCost: 5, doctorCost: 20, totalCost: 35, netProfit: 65, netMargin: 0.65 });
+    expect(report.rows[0]).toMatchObject({ city: 'Yangon', township: 'Bahan', cost: 100, payment: 60, balance: 40, materialCost: 10, labCost: 5, doctorCost: 20, totalCost: 35, netProfit: 65, netMargin: 0.65 });
     expect(report.summary).toMatchObject({ treatmentCount: 1, patientCount: 1, production: 100, payment: 60, balance: 40, totalCost: 35, netProfit: 65, collectionRate: 0.6 });
   });
 
@@ -50,12 +50,22 @@ describe('monthly report', () => {
     expect(report.rows[0].payment).toBe(60);
   });
 
+  it('does not reassign explicitly linked payments outside the report scope', () => {
+    const report = buildMonthlyReport({
+      records: [record()],
+      payments: [payment({ treatmentIds: ['treatment-outside-report'] })],
+      costSummaries: {}
+    });
+
+    expect(report.rows[0].payment).toBe(0);
+  });
+
   it('reports losses and normalizes missing demographic data', () => {
     const report = buildMonthlyReport({
-      records: [record({ patient_age: null, patient_phone: '', patient_city: '', patient_type: null, doctor_name: '', doctorEarnings: 120 })],
+      records: [record({ patient_age: null, patient_phone: '', patient_city: '', patient_township: '', patient_type: null, doctor_name: '', doctorEarnings: 120 })],
       payments: [], costSummaries: {},
     });
-    expect(report.rows[0]).toMatchObject({ age: null, phone: 'Not recorded', city: 'Not recorded', patientType: 'Not assigned', doctor: 'Unassigned', netProfit: -20 });
+    expect(report.rows[0]).toMatchObject({ age: null, phone: 'Not recorded', city: 'Not recorded', township: 'Not recorded', patientType: 'Not assigned', doctor: 'Unassigned', netProfit: -20 });
   });
 
   it('uses the report-scoped doctor earning supplied by the loader', () => {

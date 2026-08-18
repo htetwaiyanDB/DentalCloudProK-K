@@ -190,6 +190,18 @@ describe('audit log export rows', () => {
     }
   });
 
+  it('includes treatment rows throughout an inclusive date range', () => {
+    const rows = filterAuditLogRowsForExport(buildAuditLogRows(records, appointments, true), {
+      auditFilter: 'treatments',
+      dateFrom: '2026-05-29',
+      dateTo: '2026-05-30'
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.kind === 'treatment')).toBe(true);
+    expect(rows.map((row) => row.kind === 'treatment' ? row.record.date : '')).toEqual(['2026-05-30', '2026-05-29']);
+  });
+
   it('builds PDF/Excel friendly table rows with balances and recorded-by details', () => {
     const rows = filterAuditLogRowsForExport(buildAuditLogRows(records, appointments, true, payments), {
       dateFrom: '2026-05-30',

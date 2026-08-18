@@ -14,6 +14,7 @@ vi.mock('./api', () => ({
     users: {
       getAll: vi.fn(),
       getById: vi.fn(),
+      getByDoctorId: vi.fn(),
       create: vi.fn(),
       authenticate: vi.fn(),
       revokeAuthSession: vi.fn()
@@ -43,6 +44,7 @@ const createLocalStorageMock = () => {
 describe('auth staff session presence resilience', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.stubGlobal('localStorage', createLocalStorageMock());
     presenceMock.markActive.mockReset();
@@ -141,5 +143,48 @@ describe('auth staff session presence resilience', () => {
 
     await expect(auth.refreshStaffSession()).resolves.toBeNull();
     expect(auth.getSession()).toBeNull();
+  });
+
+  it('repairs a legacy doctor session that stored doctors.id as userId', async () => {
+    presenceMock.markActive.mockResolvedValueOnce(undefined);
+    await auth.createStaffSession({
+      id: '00000000-0000-0000-0000-000000000010',
+      username: 'doctor@example.com',
+      role: 'normal',
+      location_id: '00000000-0000-0000-0000-000000000020',
+      doctor_id: '00000000-0000-0000-0000-000000000010'
+    });
+    vi.mocked(api.users.getById).mockResolvedValueOnce(null);
+    vi.mocked(api.users.getByDoctorId).mockResolvedValueOnce({
+      id: '00000000-0000-0000-0000-000000000011',
+      username: 'doctor@example.com',
+      role: 'normal',
+      location_id: '00000000-0000-0000-0000-000000000020',
+      doctor_id: '00000000-0000-0000-0000-000000000010'
+    });
+
+    const refreshed = await auth.refreshStaffSession();
+
+    expect(api.users.getByDoctorId).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000010');
+    expect(refreshed?.userId).toBe('00000000-0000-0000-0000-000000000011');
+    expect(refreshed?.role).toBe('doctor');
+    expect(auth.getSession()?.userId).toBe('00000000-0000-0000-0000-000000000011');
+  });
+
+  it('does not validate patient sessions against the staff users table', async () => {
+    auth.setSession({
+      userId: '00000000-0000-0000-0000-000000000030',
+      patientId: '00000000-0000-0000-0000-000000000030',
+      username: 'Patient One',
+      role: 'patient',
+      location_id: '00000000-0000-0000-0000-000000000040',
+      loginTime: Date.now()
+    });
+
+    const refreshed = await auth.refreshStaffSession();
+
+    expect(refreshed?.role).toBe('patient');
+    expect(api.users.getById).not.toHaveBeenCalled();
+    expect(api.users.getByDoctorId).not.toHaveBeenCalled();
   });
 });

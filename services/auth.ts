@@ -235,7 +235,13 @@ export const auth = {
     const currentSession = this.getSession();
     if (!currentSession || currentSession.role === 'patient') return currentSession;
 
-    const currentUser = await api.users.getById(currentSession.userId);
+    let currentUser = await api.users.getById(currentSession.userId);
+    // Older doctor-only logins stored doctors.id as userId. After the database
+    // repair creates the linked staff user, migrate those cached sessions to
+    // the canonical users.id instead of forcing the doctor to log in again.
+    if (!currentUser && currentSession.role === 'doctor' && currentSession.doctor_id) {
+      currentUser = await api.users.getByDoctorId(currentSession.doctor_id);
+    }
     if (!currentUser) {
       await this.logout();
       return null;
@@ -244,6 +250,7 @@ export const auth = {
     const isDoctorUser = Boolean(currentUser.doctor_id);
     const refreshedSession: AuthSession = {
       ...currentSession,
+      userId: currentUser.id,
       username: currentUser.username,
       role: isDoctorUser ? 'doctor' : currentUser.role,
       allowed_tabs: isDoctorUser

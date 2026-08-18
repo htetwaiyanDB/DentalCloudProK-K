@@ -2607,7 +2607,7 @@ AUDIT LOG AND APPOINTMENT REPORTING:
 - Marketing lead appointments do not have patient charts yet. They keep guest_name, guest_phone, guest_source, and guest_notes for follow-up and can be converted into a registered patient later.
 
 DOCTOR MANAGEMENT:
-- dr_c(n, e, ph, s, sch): Create doctor. n=name, e=email, ph=phone, s=specialization, sch=schedules.
+- dr_c(n, e, ph, s, ct, cp, cpv, sch): Create doctor. n=name, e=email, ph=phone, s=custom specialization, ct=commission method (percentage or flat_visit), cp=percentage, cpv=fixed amount per visit, sch=schedules.
 - dr_u(id, data): Update doctor.
 - dr_d(id): Delete doctor.
 - dr_schedule_add(dr_id, day, start, end): Add doctor schedule.
@@ -3704,6 +3704,7 @@ I can provide guidance on:
               email: pendingAction.params.e,
               phone: pendingAction.params.ph,
               specialization: pendingAction.params.s,
+              commission_type: pendingAction.params.ct,
               commission_percentage: pendingAction.params.cp,
               commission_per_visit: pendingAction.params.cpv,
               schedules: pendingAction.params.sch
@@ -4921,6 +4922,7 @@ This action requires Agent Mode to be enabled. Please switch to Agent Mode using
                   email: params.e,
                   phone: params.ph,
                   specialization: params.s,
+                  commission_type: params.ct,
                   commission_percentage: params.cp,
                   commission_per_visit: params.cpv,
                   schedules: params.sch
@@ -5039,7 +5041,7 @@ This action requires Agent Mode to be enabled. Please switch to Agent Mode using
                 }
                 if (!patientId) throw new Error("Patient ID or Name is required for undoing treatment.");
 
-                await api.treatments.undoRecord(params.id, patientId, params.cost);
+                await api.treatments.undoRecord(params.id);
                 const pName = getScopedPatientById(patientId)?.name || patientId;
                 currentActionResult = `✅ Treatment record undone successfully for ${pName}.`;
               } catch (err: any) {

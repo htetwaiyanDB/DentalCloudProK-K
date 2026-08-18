@@ -104,6 +104,7 @@ export const rateLimitedApi = {
     update: createRateLimitedFunction('medicines:update', api.medicines.update, RATE_LIMIT_PRESETS.WRITE),
     delete: createRateLimitedFunction('medicines:delete', api.medicines.delete, RATE_LIMIT_PRESETS.WRITE),
     sell: createRateLimitedFunction('medicines:sell', api.medicines.sell, RATE_LIMIT_PRESETS.WRITE),
+    undoSale: createRateLimitedFunction('medicines:undoSale', api.medicines.undoSale, RATE_LIMIT_PRESETS.WRITE),
   },
 
   doctorSchedules: {

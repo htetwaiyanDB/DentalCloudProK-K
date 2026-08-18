@@ -13,6 +13,10 @@ const supabaseMock = vi.hoisted(() => {
         state.calls.push({ action: 'limit', count });
         return query;
       }),
+      range: vi.fn((from: number, to: number) => {
+        state.calls.push({ action: 'range', from, to });
+        return query;
+      }),
       eq: vi.fn((column: string, value: string) => {
         state.calls.push({ action: 'eq', column, value });
         return query;
@@ -65,7 +69,7 @@ describe('treatments.getAllRecords', () => {
   it('keeps the default recent-record limit for performance', async () => {
     await api.treatments.getAllRecords('location-1');
 
-    expect(supabaseMock.calls).toContainEqual({ action: 'limit', count: 50 });
+    expect(supabaseMock.calls).toContainEqual({ action: 'range', from: 0, to: 49 });
   });
 
   it('keeps commission-ledger GET URLs below custom gateway limits', async () => {
@@ -93,9 +97,9 @@ describe('treatments.getAllRecords', () => {
     expect(supabaseMock.calls).toContainEqual({
       table: 'treatments',
       action: 'select',
-      columns: '*, patients(name, balance, patient_type), doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)'
+      columns: '*, patients(name, patient_unique_id, balance, patient_type), doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)'
     });
-    expect(supabaseMock.calls).not.toContainEqual({ action: 'limit', count: 50 });
+    expect(supabaseMock.calls).toContainEqual({ action: 'range', from: 0, to: 999 });
     expect(supabaseMock.calls).toContainEqual({ action: 'eq', column: 'location_id', value: 'location-1' });
   });
 
@@ -111,7 +115,7 @@ describe('treatments.getAllRecords', () => {
       doctor_earnings: 20_000,
       date: '2026-07-16',
       patients: { name: 'Patient One', balance: 300_000, patient_type: 'Returning' },
-      doctors: { name: 'Doctor One', specialization: 'General', commission_percentage: 10, commission_per_visit: 0 }
+      doctors: { name: 'Doctor One', specialization: 'General', commission_type: 'percentage', commission_percentage: 10, commission_per_visit: 0 }
     }];
     supabaseMock.ledgerError = { message: '<!DOCTYPE html> 502 Bad gateway' };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -142,7 +146,7 @@ describe('treatments.getAllRecords', () => {
       doctor_earnings: 5_000,
       date: '2026-07-16',
       patients: { name: 'Patient Two', balance: 0, patient_type: 'Marketing' },
-      doctors: { name: 'Doctor Two', specialization: 'General', commission_percentage: 10, commission_per_visit: 0 }
+      doctors: { name: 'Doctor Two', specialization: 'General', commission_type: 'percentage', commission_percentage: 10, commission_per_visit: 0 }
     }];
     supabaseMock.ledgerThrow = new TypeError('fetch failed');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);

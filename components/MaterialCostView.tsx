@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeftRight, Beaker, Loader2, Package, Plus, RotateCw } from 'lucide-react';
+import { ArrowLeftRight, Beaker, Loader2, Package, Plus, RotateCw, Search } from 'lucide-react';
 import type { ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
 import { api } from '../services/api';
 import { formatCurrency, type Currency } from '../utils/currency';
@@ -9,6 +9,7 @@ import { formatTeethWithPosition } from '../utils/toothNumbering';
 import { formatDoctorName } from '../utils/doctorName';
 import { sortMaterialCostRowsNewestFirst } from '../utils/materialCostRows';
 import {
+  calculateCollectedByTreatmentId,
   calculateMaterialAdjustedDoctorEarnings,
   calculateMaterialNetProfit
 } from '../utils/materialCostCalculations';
@@ -32,22 +33,12 @@ const getTreatmentRecordIds = (record: ClinicalRecord & { _groupedRecords?: Clin
   return groupedRecords.map((item) => item.id).filter(Boolean);
 };
 
-const getPaymentCollectedAmount = (payment: PaymentRecord) => Math.max(0, Number(payment.clearedAmount ?? payment.amount ?? 0));
-
-const getReceiptTreatmentIds = (payment: PaymentRecord) => (
-  payment.receiptSnapshot?.treatments || []
-).map((treatment) => treatment.id).filter(Boolean);
-
-const paymentDedupeKey = (payment: PaymentRecord) => (
-  payment.receiptNumber ||
-  `${payment.patientId}|${payment.date}|${payment.amount}|${payment.createdAt || ''}|${payment.paymentMethod || ''}`
-);
-
 const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh }) => {
   const summaryRequestVersion = React.useRef(0);
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
+  const [patientSearchTerm, setPatientSearchTerm] = useState('');
   const [doctorSearchTerm, setDoctorSearchTerm] = useState('');
   const [treatmentSearchTerm, setTreatmentSearchTerm] = useState('');
   const [materialFilter, setMaterialFilter] = useState<MaterialCostFilter>('today');
@@ -63,6 +54,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   }, []);
   const [dateFrom, setDateFrom] = useState(todayKey);
   const [dateTo, setDateTo] = useState(todayKey);
+  const isTodayRange = dateFrom === todayKey && dateTo === todayKey;
   const itemsPerPage = 10;
 
   const treatmentRows = useMemo<TreatmentAuditRow[]>(() => (
@@ -70,48 +62,10 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
       .filter((row): row is TreatmentAuditRow => row.kind === 'treatment')
   ), [records]);
 
-  const collectedByTreatmentId = useMemo(() => {
-    const treatmentCostById = new Map<string, number>();
-    const treatmentIdsByPatientDate = new Map<string, string[]>();
-    const uniquePayments = Array.from(new Map(paymentRecords.map((payment) => [paymentDedupeKey(payment), payment])).values());
-
-    records.forEach((record) => {
-      if (!record.id) return;
-      treatmentCostById.set(record.id, Math.max(0, Number(record.cost || 0)));
-      if (record.patient_id && record.date) {
-        const key = `${record.patient_id}|${record.date}`;
-        const ids = treatmentIdsByPatientDate.get(key) || [];
-        ids.push(record.id);
-        treatmentIdsByPatientDate.set(key, ids);
-      }
-    });
-
-    return uniquePayments.reduce((summary, payment) => {
-      const explicitTreatmentIds = Array.from(new Set([
-        ...(payment.treatmentIds || []),
-        ...getReceiptTreatmentIds(payment)
-      ].filter(Boolean)));
-      const linkedTreatmentIds = explicitTreatmentIds.length > 0
-        ? explicitTreatmentIds
-        : treatmentIdsByPatientDate.get(`${payment.patientId}|${payment.date}`) || [];
-      const collectedAmount = getPaymentCollectedAmount(payment);
-
-      if (linkedTreatmentIds.length === 0 || collectedAmount <= 0) return summary;
-
-      const totalLinkedCost = linkedTreatmentIds.reduce((sum, treatmentId) => {
-        return sum + Math.max(0, Number(treatmentCostById.get(treatmentId) || 0));
-      }, 0);
-
-      linkedTreatmentIds.forEach((treatmentId) => {
-        const weight = totalLinkedCost > 0
-          ? Math.max(0, Number(treatmentCostById.get(treatmentId) || 0)) / totalLinkedCost
-          : 1 / linkedTreatmentIds.length;
-        summary[treatmentId] = (summary[treatmentId] || 0) + (collectedAmount * weight);
-      });
-
-      return summary;
-    }, {} as Record<string, number>);
-  }, [records, paymentRecords]);
+  const collectedByTreatmentId = useMemo(
+    () => calculateCollectedByTreatmentId(records, paymentRecords),
+    [records, paymentRecords]
+  );
 
   const baseFilteredRows = useMemo(() => {
     return filterAuditLogRowsForExport(treatmentRows, {
@@ -123,6 +77,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   }, [treatmentRows, dateFrom, dateTo]);
 
   const statusFilteredRows = useMemo(() => {
+    const patientTerm = patientSearchTerm.trim().toLowerCase();
     const doctorTerm = doctorSearchTerm.trim().toLowerCase();
     const treatmentTerm = treatmentSearchTerm.trim().toLowerCase();
 
@@ -130,16 +85,18 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
       const record = row.record;
       const groupedRecords = record._groupedRecords?.length ? record._groupedRecords : [record];
 
+      const matchesPatient = !patientTerm || [record.patient_name, record.patient_unique_id, record.patient_id]
+        .some((value) => (value || '').toLowerCase().includes(patientTerm));
       const matchesDoctor = !doctorTerm || (record.doctor_name || '').toLowerCase().includes(doctorTerm);
       const matchesTreatment = !treatmentTerm || groupedRecords.some((item) =>
         (item.description || '').toLowerCase().includes(treatmentTerm)
       );
 
-      return matchesDoctor && matchesTreatment;
+      return matchesPatient && matchesDoctor && matchesTreatment;
     });
 
     return sortMaterialCostRowsNewestFirst(matchingRows);
-  }, [baseFilteredRows, doctorSearchTerm, treatmentSearchTerm]);
+  }, [baseFilteredRows, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm]);
 
   const loadMaterialSummaries = React.useCallback(async (rowsToLoad: TreatmentAuditRow[]) => {
     const requestVersion = ++summaryRequestVersion.current;
@@ -209,12 +166,13 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     }, 0);
   };
 
+  const getNetReceive = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
+    return Math.max(0, getCollectedAmount(record) - getMaterialTotal(record));
+  };
+
   const getAdjustedDoctorEarned = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
     const groupedRecords = record._groupedRecords?.length ? record._groupedRecords : [record];
-    return calculateMaterialAdjustedDoctorEarnings(
-      groupedRecords,
-      (treatmentId) => Number(materialSummaries[treatmentId]?.totalAmount || 0)
-    );
+    return calculateMaterialAdjustedDoctorEarnings(groupedRecords);
   };
 
   const getNetProfit = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
@@ -238,7 +196,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
 
   React.useEffect(() => {
     setCurrentPage(1);
-  }, [records, doctorSearchTerm, treatmentSearchTerm, dateFrom, dateTo, materialFilter]);
+  }, [records, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm, dateFrom, dateTo, materialFilter]);
 
   React.useEffect(() => {
     if (loading) {
@@ -321,6 +279,28 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     { value: 'tomorrow', label: 'Tomorrow' },
     { value: 'today', label: 'Today' }
   ];
+
+  const handleDateFromChange = (value: string) => {
+    setDateFrom(value);
+    if (dateTo && value > dateTo) setDateTo(value);
+    setMaterialFilter('custom');
+    setCurrentPage(1);
+  };
+
+  const handleDateToChange = (value: string) => {
+    setDateTo(value);
+    if (dateFrom && value < dateFrom) setDateFrom(value);
+    setMaterialFilter('custom');
+    setCurrentPage(1);
+  };
+
+  const handleResetToToday = () => {
+    setDateFrom(todayKey);
+    setDateTo(todayKey);
+    setMaterialFilter('today');
+    setCurrentPage(1);
+  };
+
   const handleMaterialFilterChange = (filter: MaterialCostFilter) => {
     setMaterialFilter(filter);
     if (filter === 'all') {
@@ -373,7 +353,20 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
           <div className="w-full min-w-0 space-y-3 xl:max-w-5xl">
             <div className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm">
               <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:flex xl:flex-1 xl:flex-wrap xl:items-center">
+                <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:flex xl:flex-1 xl:flex-wrap xl:items-end">
+                  <div className="relative min-w-0 xl:w-52">
+                    <input
+                      type="text"
+                      placeholder="Patient name or ID"
+                      value={patientSearchTerm}
+                      onChange={(event) => {
+                        setPatientSearchTerm(event.target.value);
+                        setCurrentPage(1);
+                      }}
+                      className="w-full min-w-0 rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-800 shadow-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)]"
+                    />
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                  </div>
                   <div className="min-w-0 xl:w-36">
                     <input
                       type="text"
@@ -398,31 +391,38 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       className="w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)]"
                     />
                   </div>
-                  <div className="flex min-w-0 items-center gap-2 xl:w-auto">
-                    <label className="shrink-0 text-sm font-semibold text-slate-600">Filter day</label>
-                    <input
-                      type="date"
-                      value={dateFrom}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setDateFrom(value);
-                        setDateTo(value);
-                        setMaterialFilter('custom');
-                        setCurrentPage(1);
-                      }}
-                      className="w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)] xl:w-36"
-                    />
+                  <div className="grid min-w-0 grid-cols-2 gap-2 xl:w-auto">
+                    <label className="min-w-0 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                      From
+                      <input
+                        type="date"
+                        value={dateFrom}
+                        max={dateTo || undefined}
+                        onChange={(event) => handleDateFromChange(event.target.value)}
+                        className="mt-1 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-2.5 py-2.5 text-xs text-slate-800 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 min-[380px]:text-sm xl:w-36 xl:px-3"
+                      />
+                    </label>
+                    <label className="min-w-0 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                      To
+                      <input
+                        type="date"
+                        value={dateTo}
+                        min={dateFrom || undefined}
+                        onChange={(event) => handleDateToChange(event.target.value)}
+                        className="mt-1 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-2.5 py-2.5 text-xs text-slate-800 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 min-[380px]:text-sm xl:w-36 xl:px-3"
+                      />
+                    </label>
                     <button
                       type="button"
-                      onClick={() => {
-                        setDateFrom('');
-                        setDateTo('');
-                        setMaterialFilter('all');
-                        setCurrentPage(1);
-                      }}
-                      className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)]"
+                      onClick={handleResetToToday}
+                      title={isTodayRange ? 'Showing today only' : 'Custom date range selected. Click to reset to today.'}
+                      className={`col-span-2 min-h-10 w-full rounded-xl border px-4 py-2.5 text-xs font-bold transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)] ${
+                        isTodayRange
+                          ? 'theme-accent-border theme-accent-soft-bg theme-accent-text hover:bg-blue-100'
+                          : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                      }`}
                     >
-                      Clear
+                      {isTodayRange ? 'Today' : 'Custom'}
                     </button>
                   </div>
                 </div>
@@ -476,7 +476,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
             tabIndex={isTableScrollable ? 0 : -1}
             className="overflow-x-auto focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--hover-300)]"
           >
-          <table className="min-w-[1420px] w-full">
+          <table className="min-w-[1560px] w-full">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className="px-6 py-4 text-left text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Date</th>
@@ -489,6 +489,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Material Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Lab Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Total Cost</th>
+                <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Net Receive</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Doctor Earned</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Net Profit</th>
                 <th className="sticky right-0 z-20 min-w-[172px] border-l border-slate-200 bg-slate-50 px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500 shadow-[-10px_0_16px_-14px_rgba(15,23,42,0.55)]">Action</th>
@@ -497,7 +498,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
             <tbody className="divide-y divide-slate-100 bg-white">
               {statusFilteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="px-6 py-12 text-center">
+                  <td colSpan={14} className="px-6 py-12 text-center">
                     <div className="mx-auto max-w-sm rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6">
                       <p className="text-sm font-semibold text-slate-600">No treatment rows found</p>
                       <p className="mt-1 text-xs text-slate-400">Try another date range or clear the search field.</p>
@@ -509,6 +510,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                   const record = row.record;
                   const treatmentAmount = getTreatmentAmount(record);
                   const collectedAmount = getCollectedAmount(record);
+                  const netReceive = getNetReceive(record);
                   const adjustedDoctorEarned = getAdjustedDoctorEarned(record);
                   const netProfit = getNetProfit(record);
                   return (
@@ -528,6 +530,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'material')}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'lab')}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-slate-800 xl:px-6">{getMaterialTotal(record) > 0 ? formatCurrency(getMaterialTotal(record), currency) : '-'}</td>
+                      <td className="px-4 py-4 text-right text-sm font-black text-teal-700 xl:px-6">{collectedAmount > 0 ? formatCurrency(netReceive, currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold text-emerald-700 xl:px-6">{adjustedDoctorEarned > 0 ? formatCurrency(adjustedDoctorEarned, currency) : '-'}</td>
                       <td className={`px-4 py-4 text-right text-sm font-black xl:px-6 ${netProfit >= 0 ? 'text-slate-900' : 'text-red-600'}`}>{formatCurrency(netProfit, currency)}</td>
                       <td className="sticky right-0 z-10 min-w-[172px] border-l border-slate-100 bg-white px-4 py-4 text-right shadow-[-10px_0_16px_-14px_rgba(15,23,42,0.55)] transition-colors group-hover:bg-[var(--hover-50)] xl:px-6">
@@ -567,6 +570,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
               const adjustedDoctorEarned = getAdjustedDoctorEarned(record);
               const netProfit = getNetProfit(record);
               const totalCost = getMaterialTotal(record);
+              const netReceive = getNetReceive(record);
               return (
                 <article key={`material-cost-card-${record.id}`} className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="border-l-4 border-[var(--hover-300)] p-3 sm:p-4">
@@ -613,6 +617,10 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-100 p-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-600">Total cost</dt>
                         <dd className="mt-1 break-words text-sm font-black text-slate-800">{totalCost > 0 ? formatCurrency(totalCost, currency) : '-'}</dd>
+                      </div>
+                      <div className="min-w-0 rounded-xl border border-teal-100 bg-teal-50 p-3">
+                        <dt className="text-[10px] font-bold uppercase tracking-wide text-teal-700">Net receive</dt>
+                        <dd className="mt-1 break-words text-sm font-black text-teal-700">{collectedAmount > 0 ? formatCurrency(netReceive, currency) : '-'}</dd>
                       </div>
                       <div className="col-span-2 min-w-0 rounded-xl border border-emerald-100 bg-emerald-50 p-3 sm:col-span-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Doctor earned</dt>

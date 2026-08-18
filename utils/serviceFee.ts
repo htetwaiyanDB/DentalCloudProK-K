@@ -1,6 +1,6 @@
 import type { PaymentRecord } from '../types';
 
-const getPositiveServiceFee = (payment: PaymentRecord): number => {
+export const getPaymentServiceFeeAmount = (payment: PaymentRecord): number => {
   const snapshotAmount = Number(payment.receiptSnapshot?.payment?.serviceFeeAmount || 0);
   if (Number.isFinite(snapshotAmount) && snapshotAmount > 0) return snapshotAmount;
 
@@ -16,5 +16,5 @@ export const hasRecordedServiceFeeForVisit = (
 ): boolean => payments.some((payment) => (
   payment.patientId === patientId
   && payment.date === visitDate
-  && getPositiveServiceFee(payment) > 0
+  && getPaymentServiceFeeAmount(payment) > 0
 ));

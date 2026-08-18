@@ -68,6 +68,7 @@ export interface ClinicalRecord {
   location_id: string;
   patient_id: string;
   patient_name?: string; // Joined field for global view
+  patient_unique_id?: string; // Joined field for global view
   patient_type?: string | null; // Joined field for audit log patient type display
   patient_balance?: number; // Joined field for audit log balance/debt display
   serviceCharges?: number; // Audit-only calculated patient service charge total for this treatment visit
@@ -87,6 +88,7 @@ export interface ClinicalRecord {
   doctorEarnings?: number; // Calculated commission for this treatment
   doctorEarningEntries?: DoctorEarningEntry[];
   date: string;
+  created_at?: string;
 }
 
 export interface DoctorEarningEntry {
@@ -232,10 +234,14 @@ export interface PaymentReceiptMedicineLine {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+  standardTotal?: number;
+  discountAmount?: number;
+  pricingNote?: 'FOC' | 'DISCOUNT' | null;
 }
 
 export interface PaymentReceiptSnapshot {
   version: 1 | 2;
+  allocationReconciled?: true;
   receiptType: 'PAYMENT';
   receiptNumber: string;
   receiptDate: string;
@@ -309,7 +315,7 @@ export interface Doctor {
   schedules: DoctorSchedule[]; // Array of schedules for different days/times
   commission_type?: DoctorCommissionType;
   commission_percentage?: number; // e.g., 50 means 50% of treatment cost goes to doctor
-  commission_per_visit?: number; // Flat amount paid once per doctor/patient/date visit
+  commission_per_visit?: number; // Flat amount paid once per patient visit
   custom_commissions?: DoctorTreatmentCommission[];
   created_at?: string;
 }
@@ -327,7 +333,7 @@ export interface DoctorInput {
   schedules?: DoctorScheduleInput[];
   commission_type?: DoctorCommissionType;
   commission_percentage?: number; // e.g., 50 means 50% of treatment cost goes to doctor
-  commission_per_visit?: number; // Flat amount paid once per doctor/patient/date visit
+  commission_per_visit?: number; // Flat amount paid once per patient visit
   created_at?: string;
 }
 
@@ -372,6 +378,38 @@ export interface Appointment {
   clinical_fee_amount?: number;
   clinical_fee_patient_category?: 'NEW' | 'RETURNING' | null;
   clinical_fee_applied_at?: string | null;
+}
+
+export interface DoctorCorrectionTreatmentCandidate {
+  id: string;
+  description: string;
+  date: string;
+  doctor_id?: string | null;
+  linked_to_appointment: boolean;
+  has_financial_history: boolean;
+}
+
+export interface DoctorCorrectionPreview {
+  appointment_id: string;
+  patient_id: string;
+  patient_name: string;
+  location_id: string;
+  visit_date: string;
+  visit_time: string;
+  status: Appointment['status'];
+  old_doctor_id?: string | null;
+  old_doctor_name?: string | null;
+  treatments: DoctorCorrectionTreatmentCandidate[];
+}
+
+export interface DoctorCorrectionResult {
+  status: 'success';
+  correction_id: string;
+  appointment_id: string;
+  old_doctor_id?: string | null;
+  new_doctor_id: string;
+  updated_treatment_count: number;
+  updated_audit_count: number;
 }
 
 export type CancellationOutcome = 'NO_SHOW' | 'RESCHEDULED' | 'COMPLETED_LATER';
@@ -468,6 +506,9 @@ export interface MedicineSale {
   quantity: number;
   unit_price: number;
   total_price: number;
+  standard_total?: number | null;
+  discount_amount?: number;
+  pricing_note?: 'FOC' | 'DISCOUNT' | null;
   date: string;
   treatment_id?: string; // Optional: link to treatment if sold with treatment
   created_at?: string;
@@ -516,7 +557,7 @@ export interface LoyaltyTransaction {
   patient_id: string;
   location_id: string;
   points: number; // positive for earned, negative for redeemed
-  type: 'EARNED' | 'REDEEMED' | 'EXPIRED';
+  type: 'EARNED' | 'REDEEMED' | 'EXPIRED' | 'REVERSED';
   description: string;
   date: string;
 }

@@ -115,8 +115,11 @@ const DoctorProfileView: React.FC<DoctorProfileViewProps> = ({
           </div>
         </div>
         <div>
-          <label className="block text-[10px] font-black text-gray-500 uppercase mb-1.5">Specialization</label>
+          <label htmlFor="profile-specialization" className="block text-[10px] font-black text-gray-500 uppercase mb-1.5">Specialization</label>
           <input
+            id="profile-specialization"
+            type="text"
+            maxLength={255}
             list="doctor-profile-specialization-options"
             className="w-full border-gray-200 border rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
             value={formData.specialization || 'General'}

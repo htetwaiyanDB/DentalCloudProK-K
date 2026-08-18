@@ -272,12 +272,14 @@ CREATE TABLE treatments (
   discount_amount DECIMAL(12,2) DEFAULT 0,
   pricing_note VARCHAR(20),
   doctor_earnings DECIMAL(12,2) DEFAULT 0,
+  loyalty_points_earned INTEGER,
   date DATE DEFAULT CURRENT_DATE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   CONSTRAINT treatments_standard_cost_check CHECK (standard_cost IS NULL OR standard_cost >= 0),
   CONSTRAINT treatments_discount_amount_check CHECK (discount_amount >= 0),
   CONSTRAINT treatments_pricing_note_check CHECK (pricing_note IS NULL OR pricing_note IN ('FOC', 'DISCOUNT')),
-  CONSTRAINT treatments_doctor_earnings_check CHECK (doctor_earnings >= 0)
+  CONSTRAINT treatments_doctor_earnings_check CHECK (doctor_earnings >= 0),
+  CONSTRAINT treatments_loyalty_points_earned_check CHECK (loyalty_points_earned IS NULL OR loyalty_points_earned >= 0)
 );
 
 CREATE SEQUENCE IF NOT EXISTS payment_receipt_seq START 1;
@@ -548,9 +550,19 @@ CREATE TABLE medicine_sales (
   quantity DECIMAL(12,2) NOT NULL CHECK (quantity > 0),
   unit_price DECIMAL(12,2) NOT NULL,
   total_price DECIMAL(12,2) NOT NULL,
+  standard_total DECIMAL(12,2) NOT NULL,
+  discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  pricing_note VARCHAR(20),
   date DATE DEFAULT CURRENT_DATE,
   treatment_id UUID REFERENCES treatments(id) ON DELETE SET NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  loyalty_points_earned INTEGER,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT medicine_sales_loyalty_points_earned_check CHECK (loyalty_points_earned IS NULL OR loyalty_points_earned >= 0),
+  CONSTRAINT medicine_sales_standard_total_check CHECK (standard_total >= 0),
+  CONSTRAINT medicine_sales_discount_amount_check CHECK (discount_amount >= 0),
+  CONSTRAINT medicine_sales_total_consistency_check CHECK (total_price >= 0 AND total_price <= standard_total AND ABS((standard_total - total_price) - discount_amount) <= 0.01),
+  CONSTRAINT medicine_sales_pricing_note_check CHECK (pricing_note IS NULL OR pricing_note IN ('FOC', 'DISCOUNT')),
+  CONSTRAINT medicine_sales_pricing_semantics_check CHECK ((discount_amount = 0 AND pricing_note IS NULL) OR (discount_amount > 0 AND total_price = 0 AND pricing_note = 'FOC') OR (discount_amount > 0 AND total_price > 0 AND pricing_note = 'DISCOUNT'))
 );
 
 -- Loyalty Rules
@@ -571,7 +583,7 @@ CREATE TABLE loyalty_transactions (
   patient_id UUID REFERENCES patients(id) ON DELETE CASCADE,
   location_id UUID REFERENCES locations(id),
   points INTEGER NOT NULL,
-  type VARCHAR(20) CHECK (type IN ('EARNED', 'REDEEMED', 'EXPIRED')),
+  type VARCHAR(20) CHECK (type IN ('EARNED', 'REDEEMED', 'EXPIRED', 'REVERSED')),
   description TEXT,
   date TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -1784,7 +1796,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION get_applicable_commission_rate(
+CREATE OR REPLACE FUNCTION public.get_applicable_commission_rate(
   p_doctor_id UUID,
   p_treatment_id UUID
 )
@@ -1810,14 +1822,24 @@ BEGIN
 
   SELECT dtc.commission_rate
   INTO v_custom_rate
-  FROM doctor_treatment_commissions dtc
+  FROM public.doctor_treatment_commissions dtc
   WHERE dtc.doctor_id = p_doctor_id
     AND dtc.treatment_id = p_treatment_id
   LIMIT 1;
 
-  RETURN COALESCE(v_custom_rate, v_default_rate, 0);
+  IF v_custom_rate IS NOT NULL THEN
+    RETURN v_custom_rate;
+  END IF;
+
+  RETURN COALESCE(v_default_rate, 0);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+STABLE
+SECURITY INVOKER
+SET search_path = public, pg_temp;
+
+REVOKE ALL ON FUNCTION public.get_applicable_commission_rate(UUID, UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_applicable_commission_rate(UUID, UUID) TO anon, authenticated;
 
 CREATE OR REPLACE FUNCTION public.configure_doctor_commission(
   p_doctor_id UUID,

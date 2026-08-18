@@ -5,6 +5,7 @@ import { formatCurrency, Currency } from '../utils/currency';
 import { formatTeethWithPosition } from '../utils/toothNumbering';
 import { isReceiptItemRecent } from '../utils/receiptItemRecency';
 import { groupReceiptTreatmentsByDate, splitReceiptTreatmentsByDate } from '../utils/receiptTreatmentGroups';
+import { resolveMedicineSalePricing } from '../utils/medicineSalePricing';
 
 interface TreatmentSelectionModalProps {
   treatments: ClinicalRecord[];
@@ -250,6 +251,7 @@ const TreatmentSelectionModal: React.FC<TreatmentSelectionModalProps> = ({
                   <div className="text-center py-8 text-gray-400 italic">No medicine sales available</div>
                 ) : (
                   sortedMedicines.map((medicine) => {
+                    const pricing = resolveMedicineSalePricing(medicine as MedicineSale & Record<string, unknown>);
                     const isSelected = selectedMedicineIds.has(medicine.id);
                     const recent = isReceiptItemRecent(medicine.date || '');
                     const stale = !recent;
@@ -281,7 +283,8 @@ const TreatmentSelectionModal: React.FC<TreatmentSelectionModalProps> = ({
                                 ) : null}
                               </div>
                               <span className={`text-base font-bold ${stale && !isSelected ? 'text-slate-500' : 'text-gray-900'}`}>
-                                {formatCurrency(medicine.total_price || 0, currency)}
+                                {pricing.discountAmount > 0 && <span className="mr-2 text-xs font-medium text-slate-400 line-through">{formatCurrency(pricing.standardTotal, currency)}</span>}
+                                {formatCurrency(pricing.finalTotal, currency)}
                               </span>
                             </div>
                             <div className={`flex flex-wrap gap-4 text-sm ${stale && !isSelected ? 'text-slate-500' : 'text-gray-600'}`}>
@@ -294,6 +297,7 @@ const TreatmentSelectionModal: React.FC<TreatmentSelectionModalProps> = ({
                               </span>
                               <span>Qty: {medicine.quantity}</span>
                               <span>Unit: {formatCurrency(medicine.unit_price || 0, currency)}</span>
+                              {pricing.note && <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${pricing.note === 'FOC' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>{pricing.note}: -{formatCurrency(pricing.discountAmount, currency)}</span>}
                             </div>
                           </div>
                         </div>

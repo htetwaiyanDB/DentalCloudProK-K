@@ -65,6 +65,9 @@ describe('assistant product knowledge', () => {
 
   it('documents new clinical focus and patient summary workflows', () => {
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain("selected patient's Medicine History, newest first");
+    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('Undo restores stock and reverses the patient balance');
+    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain("selected patient's Payment History");
+    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('does not expose payment editing');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('Arrow Up/Down');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('"About this patient" live summary');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('describe total paid as unavailable, never as zero');

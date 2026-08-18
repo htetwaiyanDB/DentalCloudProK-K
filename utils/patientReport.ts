@@ -1,6 +1,7 @@
 import type { Appointment, ClinicalRecord, Doctor, MedicineSale, Patient, PaymentAllocation, PaymentMethod, PaymentRecord } from '../types';
 import type { Currency } from './currency';
 import { sumMoney } from './money';
+import { getReceiptTreatmentAllocationAmount } from './paymentReceipt';
 
 export type PatientReportTimelineKind = 'appointment' | 'treatment' | 'medicine';
 
@@ -91,10 +92,8 @@ const getTreatmentShareOfPayment = (payment: PaymentRecord, visibleTreatmentIds:
     .filter((item) => visibleIds.has(item.id))
     .reduce((total, item) => total + positiveNumber(item.finalCost), 0);
   if (treatmentValue <= 0 || visibleTreatmentValue <= 0) return 0;
-  const medicineValue = (snapshot.medicines || []).reduce((total, item) => total + positiveNumber(item.totalPrice), 0);
-  const serviceFeeValue = positiveNumber(snapshot.payment.serviceFeeAmount);
-  const capturedValue = treatmentValue + medicineValue + serviceFeeValue;
-  return capturedValue > 0 ? collected * (visibleTreatmentValue / capturedValue) : collected;
+  const treatmentAllocation = getReceiptTreatmentAllocationAmount(collected, snapshot);
+  return treatmentValue > 0 ? treatmentAllocation * (visibleTreatmentValue / treatmentValue) : 0;
 };
 
 export const buildPatientReport = ({

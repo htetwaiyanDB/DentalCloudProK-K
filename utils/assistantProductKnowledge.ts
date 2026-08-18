@@ -59,7 +59,8 @@ PATIENT LIST AND FILTERING:
 - If deleting a patient is blocked by related records, explain that linked appointments, treatments, payments, or other history may need to be reviewed instead of promising deletion will always succeed.
 
 CLINICAL FOCUS AND PATIENT SUMMARY:
-- Clinical Focus shows the selected patient's Medicine History, newest first, including dispense date, item, quantity/unit, unit price, and total. It is patient-specific; do not mix in another patient's sales.
+- Clinical Focus shows the selected patient's Medicine History, newest first, including dispense date, item, quantity/unit, unit price, total, and an undo/delete action. Undo restores stock and reverses the patient balance and exact loyalty effects; paid, receipted, or unsafe legacy records are blocked. It is patient-specific; do not mix in another patient's sales.
+- Authorized staff see the selected patient's Payment History in Clinical Focus, newest first, with receipt number, payment method, recorded-by staff, amount received, balance after payment, and a read-only receipt reprint action. It never includes another patient's payments and does not expose payment editing; payment history remains unavailable to doctor accounts.
 - Clinical dropdowns support keyboard use: Arrow Up/Down moves through visible options without wrapping past the ends, Enter selects, and Escape closes where offered.
 - The "About this patient" live summary in Clinical Focus combines the records available to the current role and branch: appointment status/history, unique care-visit dates, treatments, medicines, clinicians, current debt, service fees, and payments when permitted.
 - In that summary, total paid is collected money, while treatment value, medicine value, service fees, care value, and current debt are separate measures. If payment history is restricted for the current role, describe total paid as unavailable, never as zero.

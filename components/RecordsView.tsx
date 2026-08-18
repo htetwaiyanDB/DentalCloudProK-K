@@ -30,9 +30,11 @@ interface RecordsViewProps {
   onOpenPaymentReceipt?: (payment: PaymentRecord) => void;
   canEditPayments?: boolean;
   onPaymentCorrected?: (payment: PaymentRecord) => void | Promise<void>;
+  loadError?: string | null;
+  onQueryChange?: (query: { dateFrom: string; dateTo: string; auditFilter: AuditFilter }) => void;
 }
 
-const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], rescheduleLogs = [], payments = [], loading, onRefresh, onDeleteAll, currency, isDoctor = false, initialFilter = 'all', onOpenPaymentReceipt, canEditPayments = false, onPaymentCorrected }) => {
+const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], rescheduleLogs = [], payments = [], loading, onRefresh, onDeleteAll, currency, isDoctor = false, initialFilter = 'all', onOpenPaymentReceipt, canEditPayments = false, onPaymentCorrected, loadError = null, onQueryChange }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -155,10 +157,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
 
   const getAdjustedDoctorEarned = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
     const groupedRecords = record._groupedRecords?.length ? record._groupedRecords : [record];
-    return calculateMaterialAdjustedDoctorEarnings(
-      groupedRecords,
-      (treatmentId) => Number(materialSummaries[treatmentId]?.totalAmount || 0)
-    );
+    return calculateMaterialAdjustedDoctorEarnings(groupedRecords);
   };
 
   const auditRows = useMemo<AuditExportRow[]>(
@@ -232,6 +231,10 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
     setCurrentPage(1);
   }, [initialFilter]);
 
+  React.useEffect(() => {
+    onQueryChange?.({ dateFrom, dateTo, auditFilter });
+  }, [dateFrom, dateTo, auditFilter, onQueryChange]);
+
   const handleDownloadPDF = () => {
     exportClinicalRecordsToPDF(records, currency, {
       appointments,
@@ -273,6 +276,11 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
 
   return (
     <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm animate-fade-in">
+      {loadError && (
+        <div className="m-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 sm:m-4">
+          {loadError}
+        </div>
+      )}
       <div className="border-b border-slate-200 bg-gradient-to-br from-slate-50 via-white to-blue-50/40">
         <div className="flex min-w-0 flex-col gap-4 p-3 sm:p-4 md:p-6 xl:flex-row xl:items-start xl:justify-between xl:gap-5">
         <div className="flex min-w-0 items-start gap-3">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { User, X, Upload, Trash2, FileText, Receipt as ReceiptIcon, Package, RotateCcw, Award, Zap, Key, Edit, Download, Eye, MoreVertical, Calendar, CheckCircle2, AlertCircle, ArrowLeft, Search, Loader2, FileHeart } from 'lucide-react';
+import { User, X, Upload, Trash2, FileText, Receipt as ReceiptIcon, Package, RotateCcw, Award, Zap, Key, Edit, Download, Eye, MoreVertical, Calendar, CheckCircle2, AlertCircle, ArrowLeft, Search, Loader2, FileHeart, Printer, WalletCards } from 'lucide-react';
 import { ToothSelector } from './ToothSelector';
 import { Patient, TreatmentType, ClinicalRecord, PatientFile, LoyaltyTransaction, LoyaltyRule, Doctor, Appointment, TreatmentChargeLine, AppointmentType, Location, MedicineSale, PaymentRecord } from '../types';
 import { formatCurrency, getCurrencySymbol, Currency } from '../utils/currency';
@@ -12,6 +12,9 @@ import { calculateAppointmentShortcutDate, type AppointmentDateShortcut } from '
 import { getNextTreatmentOptionIndex } from '../utils/treatmentSelectorKeyboard';
 import { formatMedicineQuantity, getPatientMedicineHistory } from '../utils/medicineHistory';
 import { distributeOverallTreatmentDiscount } from '../utils/treatmentDiscount';
+import { resolveMedicineSalePricing } from '../utils/medicineSalePricing';
+import { formatPaymentAllocations, formatPaymentMethod } from '../utils/paymentMethods';
+import { formatPaymentTime, getPatientPaymentHistory, getPaymentBalanceAfter, getPaymentReceiptNumber, getPaymentReceivedAmount } from '../utils/paymentHistory';
 
 const AboutPatientReport = React.lazy(() => import('./AboutPatientReport'));
 
@@ -46,6 +49,7 @@ interface ClinicalViewProps {
   onDeselectAll: () => void;
   onTreatmentSubmit: (t: TreatmentType, chargeLines?: TreatmentChargeLine[]) => Promise<void>;
   onPaymentRequest: (treatments: ClinicalRecord[]) => void;
+  onOpenPaymentReceipt?: (payment: PaymentRecord) => void;
   onServiceFeeRequest?: () => void;
   onClosePatient: () => void;
   onSelectPatient: (patient: Patient) => void;
@@ -57,6 +61,7 @@ interface ClinicalViewProps {
   onAddMedicines?: () => void;
   onToggleFlatRate: (value: boolean) => void;
   onUndoTreatment?: (record: ClinicalRecord) => void;
+  onUndoMedicineSale?: (sale: MedicineSale) => Promise<void>;
   onRedeemPoints?: (points: number, amount: number) => void;
   onUpdatePatient?: (id: string, data: Partial<Patient>) => Promise<void>;
   onUpdateAccount?: (patient: Patient, password: string) => void;
@@ -94,6 +99,7 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
   onDeselectAll,
   onTreatmentSubmit,
   onPaymentRequest,
+  onOpenPaymentReceipt,
   onServiceFeeRequest,
   onClosePatient,
   onSelectPatient,
@@ -105,6 +111,7 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
   onAddMedicines,
   onToggleFlatRate,
   onUndoTreatment,
+  onUndoMedicineSale,
   onRedeemPoints,
   onUpdatePatient,
   onUpdateAccount,
@@ -120,6 +127,10 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
   const medicineHistory = React.useMemo(
     () => selectedPatient ? getPatientMedicineHistory(medicineSales, selectedPatient.id) : [],
     [medicineSales, selectedPatient]
+  );
+  const paymentHistory = React.useMemo(
+    () => selectedPatient && paymentsAvailable ? getPatientPaymentHistory(paymentRecords, selectedPatient.id) : [],
+    [paymentRecords, paymentsAvailable, selectedPatient]
   );
   const appointmentTypeOptions = React.useMemo(() => {
     const activeNames = appointmentTypes
@@ -168,6 +179,8 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
   const [isRecordingTreatment, setIsRecordingTreatment] = React.useState(false);
   const [isSavingNextAppointment, setIsSavingNextAppointment] = React.useState(false);
   const [showPatientReport, setShowPatientReport] = React.useState(false);
+  const [medicineSaleToDelete, setMedicineSaleToDelete] = React.useState<MedicineSale | null>(null);
+  const [deletingMedicineSaleId, setDeletingMedicineSaleId] = React.useState<string | null>(null);
   const [nextAppointmentFeedback, setNextAppointmentFeedback] = React.useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [nextAppointmentForm, setNextAppointmentForm] = React.useState<Partial<Appointment>>({
     date: getDefaultNextAppointmentDate(),
@@ -179,6 +192,8 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
   });
   React.useEffect(() => {
     setShowPatientReport(false);
+    setMedicineSaleToDelete(null);
+    setDeletingMedicineSaleId(null);
   }, [selectedPatient?.id]);
   const appointmentTypeOptionsForAppointment = React.useMemo(() => {
     const currentType = (nextAppointmentForm.type || '').trim();
@@ -907,20 +922,21 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                   <th className="px-5 py-4">Medicine / Item</th>
                   <th className="px-5 py-4">Quantity given</th>
                   <th className="px-5 py-4 text-right">Unit price</th>
-                  <th className="px-5 py-4 text-right md:pr-7">Total</th>
+                  <th className="px-5 py-4 text-right">Total</th>
+                  {onUndoMedicineSale && <th className="px-5 py-4 text-center md:pr-7">Action</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {medicineHistoryLoading ? (
                   <tr>
-                    <td colSpan={5} className="px-5 py-12 text-center md:px-7">
+                    <td colSpan={onUndoMedicineSale ? 6 : 5} className="px-5 py-12 text-center md:px-7">
                       <Loader2 className="mx-auto mb-3 animate-spin text-emerald-500" size={30} aria-hidden="true" />
                       <p className="font-semibold text-gray-500">Loading medicine history…</p>
                     </td>
                   </tr>
                 ) : medicineHistoryError ? (
                   <tr>
-                    <td colSpan={5} className="px-5 py-12 text-center md:px-7">
+                    <td colSpan={onUndoMedicineSale ? 6 : 5} className="px-5 py-12 text-center md:px-7">
                       <AlertCircle className="mx-auto mb-3 text-red-400" size={32} aria-hidden="true" />
                       <p className="font-semibold text-red-700">Medicine history could not be loaded.</p>
                       <p className="mt-1 text-sm text-gray-500">{medicineHistoryError}</p>
@@ -928,13 +944,15 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                   </tr>
                 ) : medicineHistory.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-5 py-12 text-center md:px-7">
+                    <td colSpan={onUndoMedicineSale ? 6 : 5} className="px-5 py-12 text-center md:px-7">
                       <Package className="mx-auto mb-3 text-emerald-200" size={34} aria-hidden="true" />
                       <p className="font-semibold text-gray-500">No medicine records for this patient yet.</p>
                       <p className="mt-1 text-sm text-gray-400">Items added to the patient’s bill will appear here.</p>
                     </td>
                   </tr>
-                ) : medicineHistory.map((sale) => (
+                ) : medicineHistory.map((sale) => {
+                  const pricing = resolveMedicineSalePricing(sale as MedicineSale & Record<string, unknown>);
+                  return (
                   <tr key={sale.id} className="transition-colors hover:bg-emerald-50/30">
                     <td className="whitespace-nowrap px-5 py-4 text-gray-600 md:px-7">{sale.date}</td>
                     <td className="px-5 py-4 font-semibold text-gray-900">{sale.medicine_name || 'Inventory item'}</td>
@@ -944,13 +962,149 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-right text-gray-600">{formatCurrency(Number(sale.unit_price || 0), currency)}</td>
-                    <td className="whitespace-nowrap px-5 py-4 text-right font-black text-gray-900 md:pr-7">{formatCurrency(Number(sale.total_price || 0), currency)}</td>
+                    <td className="whitespace-nowrap px-5 py-4 text-right font-black text-gray-900 md:pr-7">
+                      {pricing.discountAmount > 0 && <div className="text-xs font-medium text-gray-400 line-through">{formatCurrency(pricing.standardTotal, currency)}</div>}
+                      <div>{formatCurrency(pricing.finalTotal, currency)}</div>
+                      {pricing.note && <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${pricing.note === 'FOC' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>{pricing.note}</span>}
+                    </td>
+                    {onUndoMedicineSale && (
+                      <td className="px-5 py-4 text-center md:pr-7">
+                        <button
+                          type="button"
+                          onClick={() => setMedicineSaleToDelete(sale)}
+                          disabled={deletingMedicineSaleId === sale.id}
+                          className="rounded-lg p-2 text-emerald-400 transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:cursor-wait disabled:opacity-50"
+                          title="Undo/Delete Medicine Record"
+                          aria-label={`Delete ${sale.medicine_name || 'medicine'} record`}
+                        >
+                          {deletingMedicineSaleId === sale.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                        </button>
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
+      )}
+
+      {selectedPatient && paymentsAvailable && (
+        <div className="overflow-hidden rounded-xl border border-violet-100 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-violet-100 bg-violet-50/70 px-5 py-5 sm:flex-row sm:items-center sm:justify-between md:px-7">
+            <div className="flex items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-600 text-white shadow-sm shadow-violet-200">
+                <WalletCards size={19} aria-hidden="true" />
+              </span>
+              <div>
+                <h3 className="text-xl font-black text-gray-900">Payment History</h3>
+                <p className="mt-0.5 text-sm text-violet-800">Payments and receipt records for this patient only.</p>
+              </div>
+            </div>
+            <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-violet-700 ring-1 ring-violet-200">
+              {paymentHistory.length} {paymentHistory.length === 1 ? 'payment' : 'payments'}
+            </span>
+          </div>
+
+          <div className="max-h-[28rem] min-h-[12rem] overflow-auto custom-scrollbar">
+            <table className="w-full min-w-[62rem] text-left text-[15px]">
+              <thead className="sticky top-0 border-b border-violet-100 bg-violet-50/90 text-xs uppercase tracking-wide text-violet-700 backdrop-blur-sm">
+                <tr>
+                  <th className="px-5 py-4 md:px-7">Date</th>
+                  <th className="px-5 py-4">Receipt</th>
+                  <th className="px-5 py-4">Payment method</th>
+                  <th className="px-5 py-4">Recorded by</th>
+                  <th className="px-5 py-4 text-right">Amount received</th>
+                  <th className="px-5 py-4 text-right">Balance after</th>
+                  <th className="px-5 py-4 text-center md:pr-7">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-violet-50">
+                {paymentHistory.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-5 py-12 text-center md:px-7">
+                      <WalletCards className="mx-auto mb-3 text-violet-200" size={34} aria-hidden="true" />
+                      <p className="font-semibold text-gray-500">No payment records for this patient yet.</p>
+                      <p className="mt-1 text-sm text-gray-400">Completed patient payments will appear here.</p>
+                    </td>
+                  </tr>
+                ) : paymentHistory.map((payment) => {
+                  const paymentMethod = payment.allocations?.length
+                    ? formatPaymentAllocations(payment.allocations)
+                    : formatPaymentMethod(payment.paymentMethod);
+                  const receiptNumber = getPaymentReceiptNumber(payment);
+                  const paymentTime = formatPaymentTime(payment.createdAt);
+
+                  return (
+                    <tr key={payment.id} className="transition-colors hover:bg-violet-50/40">
+                      <td className="whitespace-nowrap px-5 py-4 text-gray-600 md:px-7">
+                        <div className="font-semibold text-gray-800">{payment.date}</div>
+                        {paymentTime && <div className="mt-0.5 text-xs text-gray-400">{paymentTime}</div>}
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className="inline-flex rounded-lg bg-violet-50 px-2.5 py-1 text-sm font-bold text-violet-800 ring-1 ring-violet-100">{receiptNumber}</span>
+                        {payment.corrections?.length ? (
+                          <span className="mt-2 block text-xs font-bold text-amber-700">Corrected by Admin · {payment.corrections.length} {payment.corrections.length === 1 ? 'change' : 'changes'}</span>
+                        ) : null}
+                      </td>
+                      <td className="px-5 py-4 font-semibold text-gray-800">{paymentMethod}</td>
+                      <td className="px-5 py-4 text-gray-600">{payment.createdByUserName || payment.receiptSnapshot?.payment.recordedByUserName || 'Unknown'}</td>
+                      <td className="whitespace-nowrap px-5 py-4 text-right font-black text-violet-700">{formatCurrency(getPaymentReceivedAmount(payment), currency)}</td>
+                      <td className="whitespace-nowrap px-5 py-4 text-right font-bold text-gray-900">{formatCurrency(getPaymentBalanceAfter(payment), currency)}</td>
+                      <td className="px-5 py-4 text-center md:pr-7">
+                        {onOpenPaymentReceipt ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenPaymentReceipt(payment)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition-colors hover:bg-violet-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
+                            aria-label={`Reprint receipt ${receiptNumber}`}
+                          >
+                            <Printer size={14} aria-hidden="true" /> Reprint Receipt
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-400">Unavailable</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {medicineSaleToDelete && onUndoMedicineSale && (
+        <Modal title="Delete Medicine Record" closeDisabled={!!deletingMedicineSaleId} onClose={() => setMedicineSaleToDelete(null)}>
+          <div className="space-y-5">
+            <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-900">
+              <p className="font-black">Undo {medicineSaleToDelete.medicine_name || 'this inventory item'}?</p>
+              <p className="mt-1 text-red-700">This restores {formatMedicineQuantity(medicineSaleToDelete.quantity, medicineSaleToDelete.medicine_unit)} to stock and reverses its patient balance and loyalty effects. Paid or receipted records cannot be deleted.</p>
+            </div>
+            <div className="flex gap-3">
+              <button type="button" disabled={!!deletingMedicineSaleId} onClick={() => setMedicineSaleToDelete(null)} className="flex-1 rounded-xl border border-gray-300 py-3 font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+              <button
+                type="button"
+                disabled={!!deletingMedicineSaleId}
+                onClick={async () => {
+                  setDeletingMedicineSaleId(medicineSaleToDelete.id);
+                  try {
+                    await onUndoMedicineSale(medicineSaleToDelete);
+                    setMedicineSaleToDelete(null);
+                  } catch {
+                    // App-level handling displays the database safety message.
+                  } finally {
+                    setDeletingMedicineSaleId(null);
+                  }
+                }}
+                className="flex-1 rounded-xl bg-red-600 py-3 font-bold text-white hover:bg-red-700 disabled:cursor-wait disabled:opacity-50"
+              >
+                {deletingMedicineSaleId ? 'Deleting…' : 'Delete Record'}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
 

@@ -110,23 +110,20 @@ describe('finance.processPayment', () => {
     });
   });
 
-  it('falls back to the old RPC signature when the database migration is not installed yet', async () => {
+  it('fails closed when idempotent payment storage is not installed', async () => {
     supabaseMock.rpcResults.push(
-      { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.process_patient_payment with parameter p_submission_key' } },
-      { data: [paymentRow], error: null }
+      { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.process_patient_payment with parameter p_submission_key' } }
     );
 
-    const result = await api.finance.processPayment({
+    await expect(api.finance.processPayment({
       patientId: 'patient-1',
       amount: 100,
       paymentMethod: 'CASH',
       submissionKey: 'submit-123'
-    });
+    })).rejects.toThrow(/idempotent payment storage is not installed/i);
 
-    expect(supabaseMock.rpcCalls).toHaveLength(2);
+    expect(supabaseMock.rpcCalls).toHaveLength(1);
     expect(supabaseMock.rpcCalls[0].payload.p_submission_key).toBe('submit-123');
-    expect(supabaseMock.rpcCalls[1].payload).not.toHaveProperty('p_submission_key');
-    expect(result.payment.id).toBe('payment-1');
   });
 
   it('posts split allocations through the dedicated atomic RPC', async () => {

@@ -114,7 +114,7 @@ describe('buildPatientReport', () => {
     expect(report.paymentHistory?.map((item) => item.id)).toEqual(['snapshot', 'legacy']);
   });
 
-  it('attributes only the treatment share of receipts that also contain medicines and service fees', () => {
+  it('deducts service fee and medicine before treatment on a partial mixed receipt', () => {
     const report = buildPatientReport({
       patient, appointments: [], treatments: [treatment({ id: 'mixed-treatment', cost: 100 })], medicineSales: [],
       payments: [payment({
@@ -130,7 +130,7 @@ describe('buildPatientReport', () => {
       })], doctors: [], currency: 'USD'
     });
 
-    expect(report.treatmentLedger[0]).toMatchObject({ paid: 50, balance: 50 });
+    expect(report.treatmentLedger[0]).toMatchObject({ paid: 0, balance: 100 });
   });
 
   it('allocates later partial payments against remaining treatment amounts and deduplicates payment records', () => {

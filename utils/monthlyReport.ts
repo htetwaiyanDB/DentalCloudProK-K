@@ -1,12 +1,18 @@
 import type { ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
 import type { Currency } from './currency';
 import { allocateCommissionablePayments } from './doctorCommissionLedger';
+import {
+  dedupePaymentRecords,
+  getPaymentTreatmentIds,
+  getPaymentTreatmentShare
+} from './paymentTreatmentAllocation';
 import { chunkUniqueIds, REPORT_URL_BATCH_SIZE } from './reportBatching';
 
 export interface MonthlyReportSourceRecord extends ClinicalRecord {
   patient_age?: number | null;
   patient_phone?: string | null;
   patient_city?: string | null;
+  patient_township?: string | null;
 }
 
 export interface MonthlyReportData {
@@ -24,6 +30,7 @@ export interface MonthlyReportRow {
   age: number | null;
   phone: string;
   city: string;
+  township: string;
   patientType: string;
   treatment: string;
   doctor: string;
@@ -174,33 +181,8 @@ export const groupMonthlyReportDetailRows = (rows: MonthlyReportRow[]): MonthlyR
   ));
 };
 
-const paymentTreatmentIds = (payment: PaymentRecord): string[] => Array.from(new Set([
-  ...(payment.treatmentIds || []),
-  ...(payment.receiptSnapshot?.treatments || []).map(item => item.id)
-].filter(Boolean)));
-
-const paymentDedupeKey = (payment: PaymentRecord): string => payment.id || payment.receiptNumber || [
-  payment.patientId,
-  payment.date,
-  payment.clearedAmount ?? payment.amount,
-  payment.createdAt || '',
-  payment.paymentMethod || ''
-].join('|');
-
-const treatmentShare = (payment: PaymentRecord): number => {
-  const collected = positiveMoney(payment.clearedAmount ?? payment.amount);
-  const snapshot = payment.receiptSnapshot;
-  if (!snapshot) return collected;
-  const treatmentValue = (snapshot.treatments || []).reduce((sum, item) => sum + positiveMoney(item.finalCost), 0);
-  const medicineValue = (snapshot.medicines || []).reduce((sum, item) => sum + positiveMoney(item.totalPrice), 0);
-  const serviceFee = positiveMoney(snapshot.payment.serviceFeeAmount);
-  const capturedValue = treatmentValue + medicineValue + serviceFee;
-  return capturedValue > 0 ? money(collected * treatmentValue / capturedValue) : collected;
-};
-
 const buildPaymentByTreatment = (records: MonthlyReportSourceRecord[], payments: PaymentRecord[]): Map<string, number> => {
-  const validIds = new Set(records.map(record => record.id));
-  const uniquePayments = Array.from(new Map(payments.map(payment => [paymentDedupeKey(payment), payment])).values());
+  const uniquePayments = dedupePaymentRecords(payments);
   const allocations = allocateCommissionablePayments(
     records.map(record => ({
       id: record.id,
@@ -213,8 +195,8 @@ const buildPaymentByTreatment = (records: MonthlyReportSourceRecord[], payments:
       patientId: payment.patientId,
       date: payment.date,
       createdAt: payment.createdAt,
-      commissionableAmount: treatmentShare(payment),
-      treatmentIds: paymentTreatmentIds(payment).filter(id => validIds.has(id))
+      commissionableAmount: getPaymentTreatmentShare(payment),
+      treatmentIds: getPaymentTreatmentIds(payment)
     }))
   );
 
@@ -287,6 +269,7 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
         : null,
       phone: record.patient_phone?.trim() || 'Not recorded',
       city: record.patient_city?.trim() || 'Not recorded',
+      township: record.patient_township?.trim() || 'Not recorded',
       patientType: record.patient_type?.trim() || 'Not assigned',
       treatment: record.description?.trim() || 'Treatment',
       doctor: record.doctor_name?.trim() || 'Unassigned',

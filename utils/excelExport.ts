@@ -347,6 +347,7 @@ export const exportDoctorsToExcel = async (doctors: Doctor[]) => {
   const columns: ExcelColumn[] = [
     { header: 'Doctor Name', width: 24 },
     { header: 'Specialization', width: 18 },
+    { header: 'Commission Method', width: 20 },
     { header: 'Commission %', width: 14 },
     { header: 'Commission Per Visit', width: 20 },
     { header: 'Phone', width: 16 },
@@ -356,8 +357,9 @@ export const exportDoctorsToExcel = async (doctors: Doctor[]) => {
   const rows = doctors.map((doctor) => ({
     'Doctor Name': formatDoctorName(doctor.name, 'N/A'),
     Specialization: doctor.specialization || 'General',
-    'Commission %': usesFlatVisitCommission(doctor.commission_type, doctor.specialization) ? 'N/A' : (doctor.commission_percentage != null ? doctor.commission_percentage : 0),
-    'Commission Per Visit': usesFlatVisitCommission(doctor.commission_type, doctor.specialization) ? (doctor.commission_per_visit || 0) : 'N/A',
+    'Commission Method': usesFlatVisitCommission({ commissionType: doctor.commission_type, specialization: doctor.specialization }) ? 'Fixed per visit' : 'Percentage',
+    'Commission %': usesFlatVisitCommission({ commissionType: doctor.commission_type, specialization: doctor.specialization }) ? 'N/A' : (doctor.commission_percentage != null ? doctor.commission_percentage : 0),
+    'Commission Per Visit': usesFlatVisitCommission({ commissionType: doctor.commission_type, specialization: doctor.specialization }) ? (doctor.commission_per_visit || 0) : 'N/A',
     Phone: doctor.phone || 'N/A',
     Email: doctor.email || 'N/A',
     Schedule: doctor.schedules.length === 0

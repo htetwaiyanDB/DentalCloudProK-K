@@ -1,7 +1,13 @@
-import React, { useMemo } from 'react';
-import { Users, Activity, CalendarCheck2, TrendingUp, DollarSign } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Users, Activity, CalendarCheck2, TrendingUp, DollarSign, Clock3 } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 import { Appointment, ClinicalRecord, Location, Patient } from '../types';
+import {
+  buildDoctorDashboardRangeSummary,
+  createDoctorDashboardRange,
+  validateDoctorDashboardRange,
+  type DoctorDashboardRangePreset
+} from '../utils/doctorDashboardRange';
 import PatientQRScanButton from './PatientQRScanButton';
 
 interface DoctorHomeViewProps {
@@ -23,6 +29,7 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
   onSelectPatient,
   onOpenAppointmentsForDate
 }) => {
+  const [reportRange, setReportRange] = useState(() => createDoctorDashboardRange('month'));
   const toLocalISODate = (date: Date) => {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -36,31 +43,26 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
     nextDay.setDate(nextDay.getDate() + 1);
     return toLocalISODate(nextDay);
   }, []);
-  const currentMonthKey = useMemo(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  }, []);
-  const weekRange = useMemo(() => {
-    const now = new Date();
-    const weekStart = new Date(now);
-    const dayIndex = (now.getDay() + 6) % 7; // Monday = 0
-    weekStart.setDate(now.getDate() - dayIndex);
-    weekStart.setHours(0, 0, 0, 0);
+  const validReportRange = useMemo(() => validateDoctorDashboardRange(reportRange), [reportRange]);
+  const rangeSummary = useMemo(
+    () => buildDoctorDashboardRangeSummary(appointments, treatmentRecords, reportRange),
+    [appointments, treatmentRecords, reportRange]
+  );
+  const rangeCaption = useMemo(() => {
+    if (!validReportRange) return 'Enter a valid start and end date-time.';
+    const format = (date: Date) => date.toLocaleString([], {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+    return `${format(validReportRange.start)} – ${format(validReportRange.end)}`;
+  }, [validReportRange]);
 
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
-    weekEnd.setHours(23, 59, 59, 999);
-
-    return { weekStart, weekEnd };
-  }, []);
-
-  const treatedPatientCount = useMemo(() => {
-    return new Set(treatmentRecords.map((record) => record.patient_id)).size;
-  }, [treatmentRecords]);
-
-  const completedAppointments = useMemo(() => {
-    return appointments.filter((appointment) => appointment.status === 'Completed').length;
-  }, [appointments]);
+  const applyPreset = (preset: DoctorDashboardRangePreset) => {
+    setReportRange(createDoctorDashboardRange(preset));
+  };
 
   const todayAppointments = useMemo(() => {
     return appointments.filter((appointment) => appointment.date === today).length;
@@ -124,13 +126,16 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
     return Array.from(totals.values()).sort((a, b) => a.name.localeCompare(b.name));
   };
 
-  const todayIncomeByBranch = useMemo(() => {
+  const rangeProceedsByBranch = useMemo(() => {
     return buildBranchTotals(
-      treatmentRecords.filter((record) => record.date === today),
-      (record) => Number(record.cost || 0),
+      rangeSummary.treatments,
+      (record) => {
+        const amount = Number(record.cost);
+        return Number.isFinite(amount) ? amount : 0;
+      },
       visibleBranchIds
     );
-  }, [treatmentRecords, today, branchNameById, visibleBranchIds]);
+  }, [rangeSummary.treatments, branchNameById, visibleBranchIds]);
 
   const todayAppointmentsByBranch = useMemo(() => {
     return buildBranchTotals(
@@ -148,58 +153,7 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
     );
   }, [appointments, tomorrow, branchNameById, visibleBranchIds]);
   
-  const monthlyIncome = useMemo(() => {
-    return treatmentRecords
-      .filter((record) => (record.date || '').slice(0, 7) === currentMonthKey)
-      .reduce((sum, record) => sum + Number(record.cost || 0), 0);
-  }, [treatmentRecords, currentMonthKey]);
-
-  const monthlyCommission = useMemo(() => {
-    return treatmentRecords
-      .flatMap((record) => record.doctorEarningEntries || [])
-      .filter((entry) => (entry.paymentDate || '').slice(0, 7) === currentMonthKey)
-      .reduce((sum, entry) => sum + Number(entry.earnings || 0), 0);
-  }, [treatmentRecords, currentMonthKey]);
-
-  const weeklyCommission = useMemo(() => {
-    return treatmentRecords
-      .flatMap((record) => record.doctorEarningEntries || [])
-      .filter((entry) => {
-        if (!entry.paymentDate) return false;
-        const paymentDate = new Date(`${entry.paymentDate}T00:00:00`);
-        return paymentDate >= weekRange.weekStart && paymentDate <= weekRange.weekEnd;
-      })
-      .reduce((sum, entry) => sum + Number(entry.earnings || 0), 0);
-  }, [treatmentRecords, weekRange]);
-
-
-  const weeklyProceeds = useMemo(() => {
-    return treatmentRecords
-      .filter((record) => {
-        if (!record.date) return false;
-        const recordDate = new Date(`${record.date}T00:00:00`);
-        return recordDate >= weekRange.weekStart && recordDate <= weekRange.weekEnd;
-      })
-      .reduce((sum, record) => sum + Number(record.cost || 0), 0);
-  }, [treatmentRecords, weekRange]);
-
-  const topTreatments = useMemo(() => {
-    const countMap = new Map<string, number>();
-    treatmentRecords.forEach((record) => {
-      const key = (record.description || 'Unknown').trim() || 'Unknown';
-      countMap.set(key, (countMap.get(key) || 0) + 1);
-    });
-
-    return Array.from(countMap.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([name, count]) => ({
-        name: name.length > 22 ? `${name.slice(0, 22)}...` : name,
-        count
-      }));
-  }, [treatmentRecords]);
-
-  const chartData = topTreatments.length > 0 ? topTreatments : [{ name: 'No Data', count: 1 }];
+  const chartData = rangeSummary.treatmentDistribution;
   const pieColors = ['#4f46e5', '#06b6d4', '#10b981', '#f59e0b', '#f97316', '#8b5cf6'];
 
   const renderBranchBreakdown = (
@@ -232,27 +186,80 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
           className="inline-flex w-full sm:w-auto items-center justify-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors"
         />
       </div>
+      <section className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm" aria-labelledby="doctor-dashboard-range-title">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-indigo-700">
+              <Clock3 className="h-4 w-4" aria-hidden="true" />
+              <h3 id="doctor-dashboard-range-title" className="text-sm font-black">Dashboard reporting range</h3>
+            </div>
+            <p className={`mt-1 text-xs font-medium ${validReportRange ? 'text-gray-500' : 'text-red-600'}`} aria-live="polite">
+              {rangeCaption}
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:min-w-[560px]">
+            <label className="block min-w-0">
+              <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-gray-500">Start</span>
+              <input
+                type="datetime-local"
+                value={reportRange.start}
+                max={reportRange.end || undefined}
+                onChange={(event) => setReportRange((current) => ({ ...current, start: event.target.value }))}
+                className={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-gray-800 outline-none transition focus:ring-2 ${validReportRange ? 'border-gray-200 focus:border-indigo-400 focus:ring-indigo-100' : 'border-red-300 focus:border-red-400 focus:ring-red-100'}`}
+                aria-invalid={!validReportRange}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-gray-500">End</span>
+              <input
+                type="datetime-local"
+                value={reportRange.end}
+                min={reportRange.start || undefined}
+                onChange={(event) => setReportRange((current) => ({ ...current, end: event.target.value }))}
+                className={`w-full rounded-xl border bg-white px-3 py-2 text-sm text-gray-800 outline-none transition focus:ring-2 ${validReportRange ? 'border-gray-200 focus:border-indigo-400 focus:ring-indigo-100' : 'border-red-300 focus:border-red-400 focus:ring-red-100'}`}
+                aria-invalid={!validReportRange}
+              />
+            </label>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2" aria-label="Dashboard range presets">
+          {([
+            ['today', 'Today'],
+            ['week', 'This Week'],
+            ['month', 'This Month']
+          ] as const).map(([preset, label]) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => applyPreset(preset)}
+              className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 transition hover:border-indigo-200 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         <div className="rounded-xl border border-indigo-100 bg-white p-3">
           <div className="mb-1 flex items-center gap-2 text-indigo-600">
             <Users className="h-4 w-4" />
             <p className="text-[11px] font-semibold uppercase tracking-wide">Patients Treated</p>
           </div>
-          <p className="text-2xl font-bold text-gray-900">{treatedPatientCount}</p>
+          <p className="text-2xl font-bold text-gray-900">{rangeSummary.treatedPatientCount}</p>
         </div>
         <div className="rounded-xl border border-emerald-100 bg-white p-3">
           <div className="mb-1 flex items-center gap-2 text-emerald-600">
             <Activity className="h-4 w-4" />
             <p className="text-[11px] font-semibold uppercase tracking-wide">Treatments Done</p>
           </div>
-          <p className="text-2xl font-bold text-gray-900">{treatmentRecords.length}</p>
+          <p className="text-2xl font-bold text-gray-900">{rangeSummary.treatments.length}</p>
         </div>
         <div className="rounded-xl border border-sky-100 bg-white p-3">
           <div className="mb-1 flex items-center gap-2 text-sky-600">
             <CalendarCheck2 className="h-4 w-4" />
             <p className="text-[11px] font-semibold uppercase tracking-wide">Completed Appointments</p>
           </div>
-          <p className="text-2xl font-bold text-gray-900">{completedAppointments}</p>
+          <p className="text-2xl font-bold text-gray-900">{rangeSummary.completedAppointments.length}</p>
         </div>
         <button
           type="button"
@@ -281,33 +288,19 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
         <div className="rounded-xl border border-teal-100 bg-white p-3">
           <div className="mb-1 flex items-center gap-2 text-teal-600">
             <DollarSign className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-wide">Today Income Total</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide">Range Proceeds</p>
           </div>
           <p className="text-2xl font-bold text-gray-900">
-            {todayIncomeByBranch.reduce((sum, row) => sum + row.value, 0).toLocaleString()} MMK
+            {rangeSummary.proceeds.toLocaleString()} MMK
           </p>
-          {renderBranchBreakdown(todayIncomeByBranch, (value) => `${value.toLocaleString()} MMK`, 'No income recorded today.')}
-        </div>
-        <div className="rounded-xl border border-purple-100 bg-white p-3">
-          <div className="mb-1 flex items-center gap-2 text-purple-600">
-            <DollarSign className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-wide">Monthly Proceeds</p>
-          </div>
-          <p className="text-2xl font-bold text-gray-900">{monthlyIncome.toLocaleString()} MMK</p>
+          {renderBranchBreakdown(rangeProceedsByBranch, (value) => `${value.toLocaleString()} MMK`, 'No proceeds in this range.')}
         </div>
         <div className="rounded-xl border border-emerald-100 bg-white p-3">
           <div className="mb-1 flex items-center gap-2 text-emerald-600">
             <DollarSign className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-wide">Monthly Commission</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide">Range Commission</p>
           </div>
-          <p className="text-2xl font-bold text-gray-900">{monthlyCommission.toLocaleString()} MMK</p>
-        </div>
-        <div className="rounded-xl border border-cyan-100 bg-white p-3">
-          <div className="mb-1 flex items-center gap-2 text-cyan-600">
-            <DollarSign className="h-4 w-4" />
-            <p className="text-[11px] font-semibold uppercase tracking-wide">Weekly Commission</p>
-          </div>
-          <p className="text-2xl font-bold text-gray-900">{weeklyCommission.toLocaleString()} MMK</p>
+          <p className="text-2xl font-bold text-gray-900">{rangeSummary.commission.toLocaleString()} MMK</p>
         </div>
 
       </div>
@@ -315,8 +308,13 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
       {/* Treatment Distribution Chart */}
       <div className="rounded-xl border border-gray-200 bg-white p-4">
         <h3 className="text-sm font-bold text-gray-900">Treatment Distribution</h3>
-        <p className="mb-3 mt-1 text-xs text-gray-500">Most performed treatments as a pie chart.</p>
+        <p className="mb-3 mt-1 text-xs text-gray-500">Most performed treatments in the selected reporting range.</p>
         <div className="w-full">
+          {chartData.length === 0 ? (
+            <div className="flex h-72 items-center justify-center rounded-xl bg-gray-50 px-4 text-center text-sm font-medium text-gray-500">
+              {validReportRange ? 'No treatments were recorded in this range.' : 'Choose a valid reporting range to view treatment distribution.'}
+            </div>
+          ) : <>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
@@ -360,6 +358,7 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
               </div>
             ))}
           </div>
+          </>}
         </div>
       </div>
     </div>

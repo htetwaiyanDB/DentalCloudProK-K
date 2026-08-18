@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { Calendar, Plus, Loader2, Trash2, Clock, User, FileText, ChevronLeft, ChevronRight, List, CalendarDays, ClipboardList, UserRoundCog, CalendarCog, RotateCw } from 'lucide-react';
-import { Appointment, Doctor, Patient, TreatmentType } from '../types';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import { Calendar, Plus, Loader2, Trash2, Clock, User, FileText, ChevronLeft, ChevronRight, List, CalendarDays, ClipboardList, UserRoundCog, CalendarCog, RotateCw, UserCog, AlertTriangle } from 'lucide-react';
+import { Appointment, Doctor, DoctorCorrectionPreview, DoctorCorrectionResult, Patient, TreatmentType } from '../types';
 import { exportAppointmentsToPDF } from '../utils/pdfExport';
 import { exportAppointmentsToExcel } from '../utils/excelExport';
 import { parseAppointmentClinicalFocus } from '../utils/appointmentClinicalFocus';
@@ -8,9 +8,10 @@ import { compareAppointmentStatus } from '../utils/appointmentSorting';
 import { type Currency } from '../utils/currency';
 import { formatDoctorName } from '../utils/doctorName';
 import Pagination from './Pagination';
-import { ConfirmDialog } from './Shared';
+import { ConfirmDialog, Modal } from './Shared';
 import ExportMenu from './ExportMenu';
 import PatientQRScanButton from './PatientQRScanButton';
+import { SearchableSelect } from './SearchableSelect';
 
 interface AppointmentsViewProps {
   appointments: Appointment[];
@@ -35,6 +36,16 @@ interface AppointmentsViewProps {
   onExportPDF?: () => Promise<void>;
   onExportExcel?: () => Promise<void>;
   onRefresh?: () => void | Promise<void>;
+  canCorrectDoctor?: boolean;
+  onPreviewDoctorCorrection?: (appointmentId: string) => Promise<DoctorCorrectionPreview>;
+  onCorrectDoctor?: (input: {
+    appointmentId: string;
+    expectedOldDoctorId?: string | null;
+    newDoctorId: string;
+    treatmentIds: string[];
+    reason: string;
+    requestToken: string;
+  }) => Promise<DoctorCorrectionResult>;
   canCreate?: boolean;
   canEdit?: boolean;
   canDelete?: boolean;
@@ -42,6 +53,15 @@ interface AppointmentsViewProps {
   canExport?: boolean;
   uiStyle?: 'table' | 'cards';
   initialDateQuickFilter?: 'all' | 'tomorrow' | 'today';
+  totalAppointments?: number;
+  onQueryChange?: (query: {
+    dateQuickFilter: 'all' | 'tomorrow' | 'today' | 'custom';
+    date: string;
+    search: string;
+    doctor: string;
+    treatment: string;
+    page: number;
+  }) => void;
 }
 
 const AppointmentsView: React.FC<AppointmentsViewProps> = ({
@@ -62,13 +82,18 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   onExportPDF,
   onExportExcel,
   onRefresh,
+  canCorrectDoctor = false,
+  onPreviewDoctorCorrection,
+  onCorrectDoctor,
   canCreate = true,
   canEdit = true,
   canDelete = true,
   canViewChart = true,
   canExport = true,
   uiStyle = 'table',
-  initialDateQuickFilter = 'today'
+  initialDateQuickFilter = 'today',
+  totalAppointments,
+  onQueryChange
 }) => {
   const [viewMode, setViewMode] = useState<'current' | 'calendar'>('current');
   const [upcomingPage, setUpcomingPage] = useState(1);
@@ -86,6 +111,16 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [appointmentToDelete, setAppointmentToDelete] = useState<string | null>(null);
+  const [doctorCorrectionAppointment, setDoctorCorrectionAppointment] = useState<Appointment | null>(null);
+  const [doctorCorrectionPreview, setDoctorCorrectionPreview] = useState<DoctorCorrectionPreview | null>(null);
+  const [doctorCorrectionLoading, setDoctorCorrectionLoading] = useState(false);
+  const [doctorCorrectionSubmitting, setDoctorCorrectionSubmitting] = useState(false);
+  const [doctorCorrectionError, setDoctorCorrectionError] = useState('');
+  const [correctDoctorId, setCorrectDoctorId] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [selectedCorrectionTreatmentIds, setSelectedCorrectionTreatmentIds] = useState<string[]>([]);
+  const [doctorCorrectionRequestToken, setDoctorCorrectionRequestToken] = useState('');
+  const doctorCorrectionPreviewRequestRef = useRef(0);
   const itemsPerPage = 100;
 
   const toLocalISODate = (date: Date) => {
@@ -134,6 +169,19 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     setSelectedCalendarDate(null);
     resetAppointmentPages();
   }, [initialDateQuickFilter]);
+
+  useEffect(() => {
+    if (!onQueryChange) return;
+    const timer = window.setTimeout(() => onQueryChange({
+      dateQuickFilter,
+      date: dateFilter,
+      search: searchTerm,
+      doctor: doctorFilter,
+      treatment: treatmentFilter,
+      page: currentPage
+    }), searchTerm ? 300 : 0);
+    return () => window.clearTimeout(timer);
+  }, [dateQuickFilter, dateFilter, searchTerm, doctorFilter, treatmentFilter, currentPage, onQueryChange]);
 
   const tomorrowISO = useMemo(() => {
     const nextDay = new Date();
@@ -272,8 +320,82 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             Edit Appointment Info
           </button>
         )}
+        {canCorrectDoctor && appointment.patient_id && onPreviewDoctorCorrection && onCorrectDoctor && (
+          <button
+            type="button"
+            onClick={() => void openDoctorCorrection(appointment)}
+            className={`${buttonClassName} border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100`}
+            title="Correct the doctor for this visit and its selected records"
+          >
+            <UserCog className={iconClassName} />
+            Correct Doctor
+          </button>
+        )}
       </>
     );
+  };
+
+  const closeDoctorCorrection = () => {
+    if (doctorCorrectionSubmitting) return;
+    doctorCorrectionPreviewRequestRef.current += 1;
+    setDoctorCorrectionAppointment(null);
+    setDoctorCorrectionPreview(null);
+    setDoctorCorrectionError('');
+    setCorrectDoctorId('');
+    setCorrectionReason('');
+    setSelectedCorrectionTreatmentIds([]);
+    setDoctorCorrectionRequestToken('');
+  };
+
+  const openDoctorCorrection = async (appointment: Appointment) => {
+    if (!onPreviewDoctorCorrection) return;
+    const previewRequest = doctorCorrectionPreviewRequestRef.current + 1;
+    doctorCorrectionPreviewRequestRef.current = previewRequest;
+    setDoctorCorrectionAppointment(appointment);
+    setDoctorCorrectionPreview(null);
+    setDoctorCorrectionError('');
+    setCorrectDoctorId('');
+    setCorrectionReason('');
+    setSelectedCorrectionTreatmentIds([]);
+    setDoctorCorrectionRequestToken(typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `doctor-correction-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    setDoctorCorrectionLoading(true);
+    try {
+      const preview = await onPreviewDoctorCorrection(appointment.id);
+      if (doctorCorrectionPreviewRequestRef.current !== previewRequest) return;
+      setDoctorCorrectionPreview(preview);
+      setSelectedCorrectionTreatmentIds(
+        preview.treatments.filter((treatment) => treatment.linked_to_appointment && !treatment.has_financial_history).map((treatment) => treatment.id)
+      );
+    } catch (error: any) {
+      if (doctorCorrectionPreviewRequestRef.current !== previewRequest) return;
+      setDoctorCorrectionError(error?.message || 'Could not load the doctor correction preview.');
+    } finally {
+      if (doctorCorrectionPreviewRequestRef.current === previewRequest) setDoctorCorrectionLoading(false);
+    }
+  };
+
+  const submitDoctorCorrection = async () => {
+    if (!doctorCorrectionPreview || !onCorrectDoctor) return;
+    setDoctorCorrectionError('');
+    setDoctorCorrectionSubmitting(true);
+    try {
+      await onCorrectDoctor({
+        appointmentId: doctorCorrectionPreview.appointment_id,
+        expectedOldDoctorId: doctorCorrectionPreview.old_doctor_id,
+        newDoctorId: correctDoctorId,
+        treatmentIds: selectedCorrectionTreatmentIds,
+        reason: correctionReason,
+        requestToken: doctorCorrectionRequestToken
+      });
+      setDoctorCorrectionSubmitting(false);
+      closeDoctorCorrection();
+    } catch (error: any) {
+      setDoctorCorrectionError(error?.message || 'The doctor could not be corrected.');
+    } finally {
+      setDoctorCorrectionSubmitting(false);
+    }
   };
 
   const activeVisitAppointments = useMemo(
@@ -469,6 +591,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   }, [pastAppointments, pastPage, showAllPast]);
 
   const paginatedTableAppointments = useMemo(() => {
+    if (onQueryChange) return sortedTableAppointments;
     if (showAll) return sortedTableAppointments;
     const startIndex = (currentPage - 1) * itemsPerPage;
     return sortedTableAppointments.slice(startIndex, startIndex + itemsPerPage);
@@ -880,7 +1003,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                           {tableRows.length === 0 ? (
                             <tr>
                               <td colSpan={8} className="px-3 py-8 text-center text-gray-400 italic">
-                                No appointments found.
+                                No appointments found{dateQuickFilter === 'all' ? '.' : ` for ${dateQuickFilter}.`}
                               </td>
                             </tr>
                           ) : (
@@ -961,10 +1084,13 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               {uiStyle === 'table' && (
                 <div className="mt-4 rounded-xl border border-gray-100 bg-white p-3">
                   <Pagination
-                    totalItems={sortedTableAppointments.length}
+                    totalItems={onQueryChange ? (totalAppointments || 0) : sortedTableAppointments.length}
                     itemsPerPage={itemsPerPage}
                     currentPage={currentPage}
-                    onPageChange={setCurrentPage}
+                    onPageChange={(page) => {
+                      setShowAll(false);
+                      setCurrentPage(page);
+                    }}
                     showAll={showAll}
                     onToggleShowAll={() => setShowAll(!showAll)}
                     showAllToggle={false}
@@ -1144,6 +1270,64 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             </>
           )}
         </div>
+      )}
+
+      {doctorCorrectionAppointment && (
+        <Modal title="Correct Visit Doctor" onClose={closeDoctorCorrection} maxWidthClassName="max-w-2xl" closeDisabled={doctorCorrectionSubmitting}>
+          {doctorCorrectionLoading ? (
+            <div className="flex items-center justify-center gap-3 py-12 text-gray-500"><Loader2 className="h-5 w-5 animate-spin" />Reviewing related visit records…</div>
+          ) : doctorCorrectionPreview ? (
+            <div className="space-y-5">
+              <div className="grid gap-3 rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm sm:grid-cols-2">
+                <div><span className="font-semibold text-gray-500">Patient:</span> <span className="font-bold text-gray-900">{doctorCorrectionPreview.patient_name}</span></div>
+                <div><span className="font-semibold text-gray-500">Visit:</span> <span className="font-bold text-gray-900">{formatDateDDMMYYYY(doctorCorrectionPreview.visit_date)} at {formatTime(doctorCorrectionPreview.visit_time)}</span></div>
+                <div><span className="font-semibold text-gray-500">Current doctor:</span> <span className="font-bold text-gray-900">{formatDoctorDisplayName(doctorCorrectionPreview.old_doctor_name)}</span></div>
+                <div><span className="font-semibold text-gray-500">Status:</span> <span className="font-bold text-gray-900">{doctorCorrectionPreview.status}</span></div>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-gray-500">Correct doctor</label>
+                <SearchableSelect
+                  value={correctDoctorId}
+                  onChange={setCorrectDoctorId}
+                  options={doctors
+                    .filter((doctor) => doctor.id !== doctorCorrectionPreview.old_doctor_id)
+                    .map((doctor) => ({ value: doctor.id, label: formatDoctorDisplayName(doctor.name) }))}
+                  placeholder="Search and select the correct doctor"
+                  emptyMessage="No matching doctors found"
+                />
+              </div>
+              {doctorCorrectionPreview.treatments.length > 0 && (
+                <div>
+                  <div className="mb-2"><h4 className="text-sm font-bold text-gray-900">Treatments to reassign</h4><p className="text-xs text-gray-500">Linked treatments are preselected. Review unlinked same-day records carefully.</p></div>
+                  <div className="space-y-2 rounded-2xl border border-gray-200 p-3">
+                    {doctorCorrectionPreview.treatments.map((treatment) => (
+                      <label key={treatment.id} className={`flex items-start gap-3 rounded-xl border p-3 ${treatment.has_financial_history ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-white'}`}>
+                        <input type="checkbox" checked={selectedCorrectionTreatmentIds.includes(treatment.id)} disabled={doctorCorrectionSubmitting || treatment.has_financial_history} onChange={(event) => setSelectedCorrectionTreatmentIds((current) => event.target.checked ? Array.from(new Set([...current, treatment.id])) : current.filter((id) => id !== treatment.id))} className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold text-gray-900">{treatment.description}</span>
+                          <span className="block text-xs text-gray-500">{formatDateDDMMYYYY(treatment.date)}{treatment.linked_to_appointment ? ' • Linked to this appointment' : ' • Same-day candidate (not linked)'}</span>
+                          {treatment.has_financial_history && <span className="mt-1 flex items-center gap-1 text-xs font-semibold text-red-700"><AlertTriangle className="h-3.5 w-3.5" />Paid/commissioned treatment — blocked from this correction</span>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <label htmlFor="doctor-correction-reason" className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-gray-500">Reason for correction</label>
+                <textarea id="doctor-correction-reason" value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} maxLength={1000} rows={4} disabled={doctorCorrectionSubmitting} placeholder="Explain why the original doctor assignment was incorrect (minimum 10 characters)." className="w-full resize-y rounded-xl border border-gray-200 p-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60" />
+                <p className="mt-1 text-right text-xs text-gray-400">{correctionReason.trim().length}/1000</p>
+              </div>
+              {doctorCorrectionError && <div role="alert" className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700"><AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{doctorCorrectionError}</span></div>}
+              <div className="flex flex-col-reverse gap-2 border-t border-gray-100 pt-4 sm:flex-row sm:justify-end">
+                <button type="button" onClick={closeDoctorCorrection} disabled={doctorCorrectionSubmitting} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+                <button type="button" onClick={() => void submitDoctorCorrection()} disabled={doctorCorrectionSubmitting || !correctDoctorId || correctionReason.trim().length < 10} className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-amber-600/20 hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50">{doctorCorrectionSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}Confirm Correction</button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4"><div role="alert" className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700"><AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{doctorCorrectionError || 'Could not load the doctor correction preview.'}</span></div><div className="flex justify-end"><button type="button" onClick={closeDoctorCorrection} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm font-bold text-gray-600">Close</button></div></div>
+          )}
+        </Modal>
       )}
 
       {/* Delete Confirmation Dialog */}

@@ -1,6 +1,6 @@
 import { supabase, supabaseUrl, supabaseAnonKey } from './supabase';
 import * as tus from 'tus-js-client';
-import { Patient, Appointment, AppointmentRescheduleLog, ClinicalRecord, TreatmentType, PatientFile, Doctor, DoctorSchedule, DoctorScheduleInput, User, Medicine, MedicineSale, Location, LoyaltyRule, LoyaltyTransaction, Expense, Message, Conversation, ScheduledTask, S3Settings, PatientType, AppointmentType, DoctorTreatmentCommission, PaymentMethod, PaymentRecord, PaymentReceiptSnapshot, ReceiptPreferences, ClinicalFeeSettings, ClinicalFeeCompletionResult, ActiveStaffMonitorEntry, PaymentCorrection, PaymentAllocation, AuditLogSourceType, PatientMaterialCost, PatientMaterialCostInput, TreatmentCostSummary, TreatmentCostType, MaterialLabCostPreset, MaterialLabCostPresetInput, CancellationOutcome } from '../types';
+import { Patient, Appointment, AppointmentRescheduleLog, ClinicalRecord, TreatmentType, PatientFile, Doctor, DoctorSchedule, DoctorScheduleInput, User, Medicine, MedicineSale, Location, LoyaltyRule, LoyaltyTransaction, Expense, Message, Conversation, ScheduledTask, S3Settings, PatientType, AppointmentType, DoctorTreatmentCommission, PaymentMethod, PaymentRecord, PaymentReceiptSnapshot, ReceiptPreferences, ClinicalFeeSettings, ClinicalFeeCompletionResult, ActiveStaffMonitorEntry, PaymentCorrection, PaymentAllocation, AuditLogSourceType, PatientMaterialCost, PatientMaterialCostInput, TreatmentCostSummary, TreatmentCostType, MaterialLabCostPreset, MaterialLabCostPresetInput, CancellationOutcome, DoctorCorrectionPreview, DoctorCorrectionResult } from '../types';
 import { AUTO_ONP_PATIENT_TYPE_NAME, DEFAULT_PATIENT_TYPE_NAME, DEFAULT_PATIENT_TYPE_OPTIONS, DOCTOR_DASHBOARD_TABS, FULL_ACCESS_TAB_PERMISSIONS } from '../constants';
 import { resolveAllowedTabs } from '../utils/permissions';
 import { EmailSettings, loadEmailSettingsAsync, saveEmailSettingsAsync } from '../utils/emailSettings';
@@ -9,8 +9,9 @@ import { buildSupabasePublicUrl, deleteSupabaseStorageFile, isSupabaseStorageRea
 import { findInvalidTeeth } from '../utils/toothNumbering';
 import { getPaymentHeaderMethod, normalizePaymentAllocations, normalizePaymentMethod, validatePaymentAllocations } from '../utils/paymentMethods';
 import { normalizePaymentReceiptSnapshot } from '../utils/paymentReceipt';
+import { getPaymentTreatmentShare } from '../utils/paymentTreatmentAllocation';
 import { DEFAULT_RECEIPT_PREFERENCES, normalizeReceiptPreferences } from '../utils/receiptPreferences';
-import { resolveDoctorCommissionType, usesFlatVisitCommission } from '../utils/doctorCommission';
+import { resolveDoctorCommissionType, usesFlatVisitCommission, validateDoctorCommissionPercentage, validateDoctorCommissionPerVisit, validateDoctorCommissionType } from '../utils/doctorCommission';
 import { allocateCommissionablePayments, calculateCommissionLedgerEntries } from '../utils/doctorCommissionLedger';
 import { enumValue, finiteNumber, strictDateString, trimOptional, trimRequired } from '../utils/validation';
 import { buildPatientCreatedAt } from '../utils/patientCreationDate';
@@ -27,6 +28,20 @@ let conversationsDoctorUserSupport: boolean | null = null;
 let storageConfigVersion = 0;
 
 const MEDICINE_ITEM_TYPES = ['Medicine', 'Retail', 'Supply', 'Other'] as const;
+const SUPABASE_PAGE_SIZE = 1000;
+
+const fetchAllRows = async <T,>(
+  buildQuery: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>
+): Promise<{ data: T[] | null; error: any }> => {
+  const rows: T[] = [];
+  for (let from = 0; ; from += SUPABASE_PAGE_SIZE) {
+    const result = await buildQuery(from, from + SUPABASE_PAGE_SIZE - 1);
+    if (result.error) return { data: null, error: result.error };
+    const page = result.data || [];
+    rows.push(...page);
+    if (page.length < SUPABASE_PAGE_SIZE) return { data: rows, error: null };
+  }
+};
 
 const isMissingColumnError = (error: any, columnName: string): boolean => {
   return typeof error?.message === 'string' && error.message.toLowerCase().includes(columnName.toLowerCase());
@@ -100,14 +115,18 @@ const generateRequestUuid = (): string => {
   });
 };
 
-const getReceiptServiceFeeAmount = (receiptSnapshot: unknown): number => {
-  const snapshot = normalizePaymentReceiptSnapshot(receiptSnapshot);
-  return Math.max(0, Number(snapshot?.payment?.serviceFeeAmount || 0));
-};
-
 const getPaymentCommissionableAmount = (payment: any): number => {
-  const clearedAmount = Math.max(0, Number(payment.cleared_amount ?? payment.amount ?? 0));
-  return Math.max(0, clearedAmount - getReceiptServiceFeeAmount(payment.receipt_snapshot));
+  const receiptSnapshot = normalizePaymentReceiptSnapshot(payment.receipt_snapshot);
+  return getPaymentTreatmentShare({
+    id: String(payment.id || ''),
+    patientId: String(payment.patient_id || ''),
+    amount: Math.max(0, Number(payment.amount || 0)),
+    clearedAmount: Math.max(0, Number(payment.cleared_amount ?? payment.amount ?? 0)),
+    date: String(payment.payment_date || payment.created_at?.slice(0, 10) || ''),
+    type: 'PARTIAL',
+    remainingBalance: 0,
+    receiptSnapshot
+  });
 };
 
 const getPaymentReceiptTreatmentIds = (payment: any): string[] => {
@@ -133,7 +152,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
   if (treatmentError && isMissingColumnError(treatmentError, 'treatment_type_id')) {
     const fallback = await supabase
       .from('treatments')
-      .select('id, location_id, patient_id, doctor_id, date, cost, doctors(specialization, commission_percentage, commission_per_visit)')
+      .select('id, location_id, patient_id, doctor_id, date, cost, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
       .eq('patient_id', patientId);
     treatmentRows = (fallback.data || []).map((row: any) => ({ ...row, treatment_type_id: null }));
     treatmentError = fallback.error;
@@ -184,8 +203,10 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     date: row.date,
     cost: Math.max(0, Number(row.cost || 0)),
     materialCost: materialByTreatment[row.id]?.totalAmount || 0,
-    commissionType: row.doctors?.commission_type,
-    specialization: row.doctors?.specialization,
+    commissionType: resolveDoctorCommissionType({
+      commissionType: row.doctors?.commission_type,
+      specialization: row.doctors?.specialization
+    }),
     commissionPercentage: Number(row.doctors?.commission_percentage || 0),
     commissionPerVisit: Number(row.doctors?.commission_per_visit || 0),
     customCommissionPercentage: row.doctor_id && row.treatment_type_id
@@ -554,14 +575,17 @@ const fetchSyntheticMaterialCostExpenses = async (
   locationId: string | undefined,
   existingExpenses: Expense[]
 ): Promise<Expense[]> => {
-  let { data: materialRows, error: materialError } = await supabase
+  const fetchMaterialRows = (columns: string) => fetchAllRows<any>((from, to) => supabase
     .from('patient_material_costs')
-    .select('audit_log_id, material_name, cost_type, total_amount, created_at, updated_at');
+    .select(columns)
+    .order('id')
+    .range(from, to));
+  let { data: materialRows, error: materialError } = await fetchMaterialRows(
+    'audit_log_id, material_name, cost_type, total_amount, created_at, updated_at'
+  );
 
   if (materialError && isMissingColumnError(materialError, 'cost_type')) {
-    const legacyResult = await supabase
-      .from('patient_material_costs')
-      .select('audit_log_id, material_name, total_amount, created_at, updated_at');
+    const legacyResult = await fetchMaterialRows('audit_log_id, material_name, total_amount, created_at, updated_at');
     materialRows = (legacyResult.data || []).map((row: any) => ({ ...row, cost_type: 'material' }));
     materialError = legacyResult.error;
   }
@@ -613,7 +637,7 @@ const fetchSyntheticMaterialCostExpenses = async (
   const auditIds = Array.from(new Set((materialRows || []).map((row: any) => row.audit_log_id).filter(Boolean)));
   if (auditIds.length === 0) return [];
 
-  const auditBatches = await Promise.all(chunk(auditIds, 100).map(async (auditIdBatch) => {
+  const auditBatches = await Promise.all(chunk(auditIds, 25).map(async (auditIdBatch) => {
     const { data, error } = await supabase
       .from('audit_logs')
       .select('id, source_id, location_id')
@@ -632,7 +656,7 @@ const fetchSyntheticMaterialCostExpenses = async (
   if (auditRows.length === 0) return [];
 
   const treatmentIds = Array.from(new Set(auditRows.map((row) => row.source_id).filter(Boolean)));
-  const treatmentBatches = await Promise.all(chunk(treatmentIds, 100).map(async (treatmentIdBatch) => {
+  const treatmentBatches = await Promise.all(chunk(treatmentIds, 25).map(async (treatmentIdBatch) => {
     const { data, error } = await supabase
       .from('treatments')
       .select('id, location_id, patient_id, date, description, patients(name)')
@@ -801,7 +825,10 @@ const mapDoctor = (doc: any): Doctor => {
     email: doc.email,
     phone: doc.phone,
     specialization: doc.specialization,
-    commission_type: resolveDoctorCommissionType(doc.commission_type, doc.specialization),
+    commission_type: resolveDoctorCommissionType({
+      commissionType: doc.commission_type,
+      specialization: doc.specialization
+    }),
     commission_percentage: doc.commission_percentage ?? 0,
     commission_per_visit: doc.commission_per_visit ?? 0,
     schedules: (doc.doctor_schedules || []).map((sched: any) => ({
@@ -862,6 +889,12 @@ const getJoinedOne = <T = any>(value: T | T[] | null | undefined): T | null => (
 const getLocalISODate = (date = new Date()): string => {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 10);
+};
+
+const getLocalDateBoundaryISO = (date: string, addDays = 0): string => {
+  const [year, month, day] = date.split('-').map(Number);
+  const boundary = new Date(year, (month || 1) - 1, (day || 1) + addDays);
+  return boundary.toISOString();
 };
 
 const getOneMonthAgoISO = (date = new Date()): string => {
@@ -982,53 +1015,6 @@ const completeAppointmentWithClinicalFee = async (
     patientCategory: row?.clinical_fee_patient_category || null,
     newBalance: null
   };
-};
-
-const completeScheduledAppointmentForTreatment = async ({
-  locationId,
-  patientId,
-  doctorId,
-  treatmentDate
-}: {
-  locationId: string;
-  patientId: string;
-  doctorId?: string | null;
-  treatmentDate: string;
-}): Promise<string[]> => {
-  let query = supabase
-    .from('appointments')
-    .select('id')
-    .eq('location_id', locationId)
-    .eq('patient_id', patientId)
-    .eq('date', treatmentDate)
-    .eq('status', 'Scheduled')
-    .order('time')
-    .limit(1);
-
-  if (doctorId) query = query.eq('doctor_id', doctorId);
-
-  let { data, error } = await query;
-  if (!error && (!data || data.length === 0) && doctorId) {
-    const fallback = await supabase
-      .from('appointments')
-      .select('id')
-      .eq('location_id', locationId)
-      .eq('patient_id', patientId)
-      .eq('date', treatmentDate)
-      .eq('status', 'Scheduled')
-      .order('time')
-      .limit(1);
-    data = fallback.data;
-    error = fallback.error;
-  }
-
-  if (error) throw new Error(error.message);
-
-  const ids = (data || []).map((appointment) => appointment.id).filter(Boolean);
-  for (const id of ids) {
-    await completeAppointmentWithClinicalFee(id);
-  }
-  return ids;
 };
 
 const getAppointmentDoctorDisplayName = (appointmentRow: any, clinicalDoctorName?: string): string | undefined => {
@@ -1540,11 +1526,13 @@ export const api = {
 
         const basePatientColumns = 'id, patient_unique_id, location_id, name, email, phone, age, address, city, patient_type, balance, loyalty_points, medical_history, created_at';
         const baseColumns = `${basePatientColumns}, patient_auth(id, username)`;
-        const buildQuery = (regionColumn: 'township' | 'state_region') => {
+        const buildQuery = (regionColumn: 'township' | 'state_region', offset: number) => {
           let query = supabase
             .from('patients')
             .select(`${baseColumns}, ${regionColumn}`)
-            .order('created_at', { ascending: false });
+            .order('created_at', { ascending: false })
+            .order('id')
+            .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
 
           if (locationId) {
             query = query.eq('location_id', locationId);
@@ -1553,43 +1541,51 @@ export const api = {
           return query;
         };
 
-        const initialResult = await buildQuery('township');
-        let data: any[] | null = initialResult.data;
-        let error: any = initialResult.error;
-
-        if (error && isMissingColumnError(error, 'township')) {
-          const fallbackResult = await buildQuery('state_region');
-          data = fallbackResult.data;
-          error = fallbackResult.error;
-        }
-
-        if (error && isOptionalRelationAccessError(error, ['patient_auth'])) {
-          const buildPatientOnlyQuery = (regionColumn: 'township' | 'state_region') => {
-            let query = supabase
-              .from('patients')
-              .select(`${basePatientColumns}, ${regionColumn}`)
-              .order('created_at', { ascending: false });
-
-            if (locationId) {
-              query = query.eq('location_id', locationId);
-            }
-
-            return query;
-          };
-
-          const fallbackResult = await buildPatientOnlyQuery('township');
-          data = fallbackResult.data;
-          error = fallbackResult.error;
+        const patients: any[] = [];
+        for (let offset = 0; ; offset += SUPABASE_PAGE_SIZE) {
+          const initialResult = await buildQuery('township', offset);
+          let data: any[] | null = initialResult.data;
+          let error: any = initialResult.error;
 
           if (error && isMissingColumnError(error, 'township')) {
-            const legacyFallbackResult = await buildPatientOnlyQuery('state_region');
-            data = legacyFallbackResult.data;
-            error = legacyFallbackResult.error;
+            const fallbackResult = await buildQuery('state_region', offset);
+            data = fallbackResult.data;
+            error = fallbackResult.error;
           }
-        }
 
-        if (error) throw error;
-        return (data || []).map(mapPatient);
+          if (error && isOptionalRelationAccessError(error, ['patient_auth'])) {
+            const buildPatientOnlyQuery = (regionColumn: 'township' | 'state_region', pageOffset: number) => {
+              let query = supabase
+                .from('patients')
+                .select(`${basePatientColumns}, ${regionColumn}`)
+                .order('created_at', { ascending: false })
+                .order('id')
+                .range(pageOffset, pageOffset + SUPABASE_PAGE_SIZE - 1);
+
+              if (locationId) {
+                query = query.eq('location_id', locationId);
+              }
+
+              return query;
+            };
+
+            const fallbackResult = await buildPatientOnlyQuery('township', offset);
+            data = fallbackResult.data;
+            error = fallbackResult.error;
+
+            if (error && isMissingColumnError(error, 'township')) {
+              const legacyFallbackResult = await buildPatientOnlyQuery('state_region', offset);
+              data = legacyFallbackResult.data;
+              error = legacyFallbackResult.error;
+            }
+          }
+
+          if (error) throw error;
+          const page = data || [];
+          patients.push(...page);
+          if (page.length < SUPABASE_PAGE_SIZE) break;
+        }
+        return patients.map(mapPatient);
       } catch (err) {
         console.warn("Error fetching patients:", err);
         return []; // Return empty array instead of crashing
@@ -1835,99 +1831,14 @@ export const api = {
       return mapPatient(result);
     },
     delete: async (id: string): Promise<void> => {
-      // Patient deletion intentionally removes patient-owned data. Keep
-      // appointments as guest/lead records where possible, then delete child
-      // rows that may otherwise block the final patient delete via RESTRICT FKs.
-      const { data: patient, error: patientFetchError } = await supabase
-        .from('patients')
-        .select('name, phone')
-        .eq('id', id)
-        .single();
-
-      if (patientFetchError) {
-        throw new Error(`Failed to fetch patient before deletion: ${patientFetchError.message}`);
-      }
-
-      if (!patient) {
-        throw new Error('Patient not found.');
-      }
-
-      const { data: patientAppointments, error: fetchAppointmentsError } = await supabase
-        .from('appointments')
-        .select('id, guest_name, guest_phone')
-        .eq('patient_id', id);
-
-      if (fetchAppointmentsError) {
-        throw new Error(`Failed to check appointments before patient deletion: ${fetchAppointmentsError.message}`);
-      }
-
-      const appointmentsNeedingFix = (patientAppointments || []).filter(
-        (apt) => !apt.guest_name?.trim() || !apt.guest_phone?.trim()
-      );
-
-      if (appointmentsNeedingFix.length > 0) {
-        const { error: updateError } = await supabase
-          .from('appointments')
-          .update({
-            guest_name: patient.name || 'Unknown Patient',
-            guest_phone: patient.phone?.trim() || 'N/A',
-          })
-          .in(
-            'id',
-            appointmentsNeedingFix.map((a) => a.id)
-          );
-
-        if (updateError) {
-          throw new Error(
-            `Failed to preserve appointments before patient deletion: ${updateError.message}`
-          );
+      const { error } = await supabase.rpc('delete_patient_atomic', { p_patient_id: id });
+      if (error) {
+        if (isMissingFunctionError(error, 'delete_patient_atomic')) {
+          throw new Error('Atomic patient deletion is not installed. Apply the atomic clinical workflows migration before deleting patients.');
         }
+        throw new Error(error.message);
       }
 
-      const deleteFromTable = async (table: string, column = 'patient_id') => {
-        const { error } = await supabase
-          .from(table)
-          .delete()
-          .eq(column, id);
-
-        if (error) {
-          if (isMissingRelationError(error, table)) {
-            return;
-          }
-          throw new Error(`Failed to delete related ${table.replace(/_/g, ' ')}: ${error.message}`);
-        }
-      };
-
-      // Delete restricted/dependent child rows first. This prevents failures
-      // such as payments.patient_id ON DELETE RESTRICT while preserving normal
-      // table-level RLS/security for each delete operation.
-      await deleteFromTable('patient_auth');
-      await deleteFromTable('payments');
-      await deleteFromTable('medicine_sales');
-      await deleteFromTable('loyalty_transactions');
-      await deleteFromTable('treatments');
-      await deleteFromTable('conversations');
-
-      // Now safe to delete — appointments can SET NULL without violating
-      // guest constraints, and patient-owned child rows are gone.
-      const { error } = await supabase
-        .from('patients')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw new Error(error.message);
-    },
-    _deprecatedDelete: async (id: string): Promise<void> => {
-
-
-
-      const { error } = await supabase
-
-        .from('patients')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw new Error(error.message);
     },
 
 
@@ -2398,39 +2309,165 @@ export const api = {
   },
 
   appointments: {
-    getAll: async (locationId?: string): Promise<Appointment[]> => {
-      try {
+    getDoctorCorrectionPreview: async (
+      appointmentId: string,
+      actor: { userId: string; authToken: string }
+    ): Promise<DoctorCorrectionPreview> => {
+      const { data, error } = await supabase.rpc('preview_visit_doctor_correction', {
+        p_appointment_id: trimRequired(appointmentId, 'Appointment'),
+        p_admin_user_id: trimRequired(actor.userId, 'Administrator'),
+        p_session_token: trimRequired(actor.authToken, 'Administrator session')
+      });
+      if (error) {
+        if (isMissingFunctionError(error, 'preview_visit_doctor_correction')) {
+          throw new Error('Doctor correction is not installed. Apply the visit doctor correction migration first.');
+        }
+        throw new Error(error.message);
+      }
+      const result = Array.isArray(data) ? data[0] : data;
+      if (!result?.appointment_id) throw new Error('Doctor correction preview returned no appointment.');
+      return result as DoctorCorrectionPreview;
+    },
+    correctDoctor: async (input: {
+      appointmentId: string;
+      expectedOldDoctorId?: string | null;
+      newDoctorId: string;
+      treatmentIds: string[];
+      reason: string;
+      actor: { userId: string; authToken: string };
+      requestToken?: string;
+    }): Promise<DoctorCorrectionResult> => {
+      const reason = trimRequired(input.reason, 'Correction reason', { maxLength: 1000 });
+      if (reason.length < 10) throw new Error('Correction reason must contain at least 10 characters.');
+      const { data, error } = await supabase.rpc('correct_visit_doctor_atomic', {
+        p_appointment_id: trimRequired(input.appointmentId, 'Appointment'),
+        p_expected_old_doctor_id: input.expectedOldDoctorId || null,
+        p_new_doctor_id: trimRequired(input.newDoctorId, 'Correct doctor'),
+        p_treatment_ids: Array.from(new Set(input.treatmentIds.filter(Boolean))),
+        p_reason: reason,
+        p_admin_user_id: trimRequired(input.actor.userId, 'Administrator'),
+        p_session_token: trimRequired(input.actor.authToken, 'Administrator session'),
+        p_request_token: input.requestToken || generateRequestUuid()
+      });
+      if (error) {
+        if (isMissingFunctionError(error, 'correct_visit_doctor_atomic')) {
+          throw new Error('Doctor correction is not installed. Apply the visit doctor correction migration first.');
+        }
+        throw new Error(error.message);
+      }
+      const result = Array.isArray(data) ? data[0] : data;
+      if (!result?.correction_id) throw new Error('Doctor correction returned no result.');
+      return result as DoctorCorrectionResult;
+    },
+    list: async (
+      locationId: string | undefined,
+      options: {
+        date?: string;
+        page?: number;
+        pageSize?: number;
+        search?: string;
+        doctorIds?: string[];
+        treatment?: string;
+      } = {}
+    ): Promise<{ appointments: Appointment[]; total: number }> => {
+      const pageSize = Math.min(Math.max(options.pageSize || 100, 1), 100);
+      const page = Math.max(options.page || 1, 1);
+      const safeTerm = (value: string) => value.replace(/[%,_(),]/g, ' ').trim();
+      const search = safeTerm(options.search || '');
+      const treatment = safeTerm(options.treatment || '');
+
+      let matchingPatientIds: string[] = [];
+      if (search) {
+        let patientQuery = supabase.from('patients').select('id').ilike('name', `%${search}%`).limit(1000);
+        if (locationId) patientQuery = patientQuery.eq('location_id', locationId);
+        const { data, error } = await patientQuery;
+        if (error) throw error;
+        matchingPatientIds = (data || []).map((patient: any) => patient.id);
+      }
+
+      const buildQuery = (withRelations: boolean) => {
         let query = supabase
           .from('appointments')
-          .select('*, patients!appointments_patient_id_fkey(name, balance), doctors(name)')
-          .order('date');
+          .select(withRelations ? '*, patients!appointments_patient_id_fkey(name, balance), doctors(name)' : '*', { count: 'exact' })
+          .order('date')
+          .order('time')
+          .order('id')
+          .range((page - 1) * pageSize, page * pageSize - 1);
 
-        if (locationId) {
-          query = query.eq('location_id', locationId);
+        if (locationId) query = query.eq('location_id', locationId);
+        if (options.date) query = query.eq('date', options.date);
+        if (options.doctorIds?.length) query = query.in('doctor_id', options.doctorIds);
+        if (treatment) query = query.or(`type.ilike.%${treatment}%,notes.ilike.%${treatment}%`);
+        if (search) {
+          const filters = [
+            `guest_name.ilike.%${search}%`,
+            `guest_phone.ilike.%${search}%`,
+            `guest_source.ilike.%${search}%`,
+            `guest_notes.ilike.%${search}%`,
+            `type.ilike.%${search}%`,
+            `notes.ilike.%${search}%`,
+            `date.ilike.%${search}%`,
+            `time.ilike.%${search}%`,
+            `status.ilike.%${search}%`
+          ];
+          if (matchingPatientIds.length) filters.push(`patient_id.in.(${matchingPatientIds.join(',')})`);
+          query = query.or(filters.join(','));
         }
+        return query;
+      };
 
-        const initialResult = await query;
-        let data: any[] | null = initialResult.data;
-        let error: any = initialResult.error;
+      let { data, error, count } = await buildQuery(true);
+      if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
+        ({ data, error, count } = await buildQuery(false));
+      }
+      if (error) throw error;
 
-        if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
-          let fallbackQuery = supabase
-            .from('appointments')
-            .select('*')
-            .order('date');
+      return {
+        appointments: (data || []).map((apt: any) => ({
+          ...apt,
+          patient_name: apt.patients?.name || apt.guest_name || 'Unknown',
+          patient_balance: apt.patients?.balance ?? null,
+          doctor_name: getAppointmentDoctorDisplayName(apt)
+        })),
+        total: count || 0
+      };
+    },
+    getAll: async (locationId?: string, options?: {
+      dateFrom?: string;
+      dateTo?: string;
+      doctorId?: string;
+      throwOnError?: boolean;
+    }): Promise<Appointment[]> => {
+      try {
+        const pageSize = 1000;
+        const appointments: any[] = [];
 
-          if (locationId) {
-            fallbackQuery = fallbackQuery.eq('location_id', locationId);
+        for (let offset = 0; ; offset += pageSize) {
+          const buildQuery = (withRelations: boolean) => {
+            let query = supabase
+              .from('appointments')
+              .select(withRelations ? '*, patients!appointments_patient_id_fkey(name, balance), doctors(name)' : '*')
+              .order('date')
+              .order('id')
+              .range(offset, offset + pageSize - 1);
+
+            if (locationId) query = query.eq('location_id', locationId);
+            if (options?.dateFrom) query = query.gte('date', options.dateFrom);
+            if (options?.dateTo) query = query.lte('date', options.dateTo);
+            if (options?.doctorId) query = query.eq('doctor_id', options.doctorId);
+            return query;
+          };
+
+          let { data, error } = await buildQuery(true);
+          if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
+            ({ data, error } = await buildQuery(false));
           }
+          if (error) throw error;
 
-          const fallback = await fallbackQuery;
-          data = fallback.data;
-          error = fallback.error;
+          const page = data || [];
+          appointments.push(...page);
+          if (page.length < pageSize) break;
         }
-
-        if (error) throw error;
-
-        const appointments = data || [];
         const completedAppointments = appointments.filter(
           (apt: any) => apt.status === 'Completed' && apt.patient_id && apt.date
         );
@@ -2497,6 +2534,7 @@ export const api = {
         }));
       } catch (err) {
         console.warn("Error fetching appointments:", err);
+        if (options?.throwOnError) throw err;
         return [];
       }
     },
@@ -2866,18 +2904,24 @@ export const api = {
   },
 
   appointmentRescheduleLogs: {
-    getAll: async (locationId?: string): Promise<AppointmentRescheduleLog[]> => {
+    getAll: async (locationId?: string, options?: {
+      dateFrom?: string;
+      dateTo?: string;
+      throwOnError?: boolean;
+    }): Promise<AppointmentRescheduleLog[]> => {
       try {
-        let query = supabase
-          .from('appointment_reschedule_logs')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (locationId) {
-          query = query.eq('location_id', locationId);
-        }
-
-        const { data, error } = await query;
+        const { data, error } = await fetchAllRows<any>((from, to) => {
+          let query = supabase
+            .from('appointment_reschedule_logs')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .order('id')
+            .range(from, to);
+          if (locationId) query = query.eq('location_id', locationId);
+          if (options?.dateFrom) query = query.gte('created_at', getLocalDateBoundaryISO(options.dateFrom));
+          if (options?.dateTo) query = query.lt('created_at', getLocalDateBoundaryISO(options.dateTo, 1));
+          return query;
+        });
         if (error) {
           if (isMissingRelationError(error, 'appointment_reschedule_logs')) {
             return [];
@@ -2891,6 +2935,7 @@ export const api = {
           return [];
         }
         console.warn('Failed to load appointment reschedule logs:', error?.message || error);
+        if (options?.throwOnError) throw error;
         return [];
       }
     },
@@ -3309,16 +3354,25 @@ export const api = {
                 doctorId: rec.doctor_id,
                 paymentDate: rec.date,
                 treatmentDate: rec.date,
-                calculationMode: usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? 'flat_visit' : 'percentage',
+                calculationMode: usesFlatVisitCommission({
+                  commissionType: rec.doctors?.commission_type,
+                  specialization: rec.doctors?.specialization
+                }) ? 'flat_visit' : 'percentage',
                 allocatedPayment: Number(rec.cost || 0),
-                commissionRate: Number((usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? rec.doctors?.commission_per_visit : rec.doctors?.commission_percentage) || 0),
+                commissionRate: Number((usesFlatVisitCommission({
+                  commissionType: rec.doctors?.commission_type,
+                  specialization: rec.doctors?.specialization
+                }) ? rec.doctors?.commission_per_visit : rec.doctors?.commission_percentage) || 0),
                 earnings: Number(rec.doctor_earnings || 0)
               }]
             : []
         ),
         doctor_name: rec.doctors?.name || undefined,
         doctor_specialization: rec.doctors?.specialization || null,
-        doctor_commission_type: rec.doctors?.commission_type ? resolveDoctorCommissionType(rec.doctors.commission_type, rec.doctors?.specialization) : null,
+        doctor_commission_type: resolveDoctorCommissionType({
+          commissionType: rec.doctors?.commission_type,
+          specialization: rec.doctors?.specialization
+        }),
         doctor_commission_percentage: rec.doctors?.commission_percentage !== undefined ? Number(rec.doctors.commission_percentage || 0) : null,
         doctor_commission_per_visit: rec.doctors?.commission_per_visit !== undefined ? Number(rec.doctors.commission_per_visit || 0) : null
       }));
@@ -3403,11 +3457,11 @@ export const api = {
       const loadPages = async (fromDate?: string, patientIds?: string[]): Promise<MonthlyReportSourceRecord[]> => {
         const records: MonthlyReportSourceRecord[] = [];
         for (let offset = 0; ; offset += pageSize) {
-          const buildQuery = (withRelations: boolean) => {
+          const buildQuery = (withRelations: boolean, regionColumn: 'township' | 'state_region' = 'township') => {
             let query = supabase
               .from('treatments')
               .select(withRelations
-                ? 'id, location_id, patient_id, doctor_id, treatment_type_id, teeth, description, cost, standard_cost, discount_amount, pricing_note, doctor_earnings, date, patients(name, age, phone, city, patient_type), doctors(name)'
+                ? `id, location_id, patient_id, doctor_id, treatment_type_id, teeth, description, cost, standard_cost, discount_amount, pricing_note, doctor_earnings, date, patients(name, age, phone, city, ${regionColumn}, patient_type), doctors(name)`
                 : 'id, location_id, patient_id, doctor_id, treatment_type_id, teeth, description, cost, standard_cost, discount_amount, pricing_note, doctor_earnings, date')
               .lte('date', dateTo)
               .order('date', { ascending: true })
@@ -3420,6 +3474,13 @@ export const api = {
           };
 
           let { data, error }: { data: any[] | null; error: any } = await buildQuery(true);
+          let patientRegionColumn: 'township' | 'state_region' = 'township';
+          if (error && isMissingColumnError(error, 'township')) {
+            patientRegionColumn = 'state_region';
+            const legacyRegionFallback = await buildQuery(true, patientRegionColumn);
+            data = legacyRegionFallback.data;
+            error = legacyRegionFallback.error;
+          }
           if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
             const fallback = await buildQuery(false);
             data = fallback.data;
@@ -3437,6 +3498,7 @@ export const api = {
             patient_age: record.patients?.age ?? null,
             patient_phone: record.patients?.phone || null,
             patient_city: record.patients?.city || null,
+            patient_township: record.patients?.[patientRegionColumn] || null,
             patient_type: record.patients?.patient_type || null,
             doctor_name: record.doctors?.name || undefined
           })));
@@ -3469,62 +3531,59 @@ export const api = {
       }
       return { records, allocationRecords };
     },
-    getAllRecords: async (locationId?: string, options?: { limit?: number | null }): Promise<ClinicalRecord[]> => {
+    getAllRecords: async (locationId?: string, options?: {
+      limit?: number | null;
+      dateFrom?: string;
+      dateTo?: string;
+      doctorId?: string;
+      includeCommissionEntries?: boolean;
+      throwOnError?: boolean;
+    }): Promise<ClinicalRecord[]> => {
       try {
-        let query = supabase
-          .from('treatments')
-          .select('*, patients(name, balance, patient_type), doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)')
-          .order('date', { ascending: false });
-
         const limit = options?.limit === undefined ? 50 : options.limit;
-        if (typeof limit === 'number' && limit > 0) {
-          query = query.limit(limit);
-        }
-
-        if (locationId) {
-          query = query.eq('location_id', locationId);
-        }
-
-        const initialResult = await query;
-        let data: any[] | null = initialResult.data;
-        let error: any = initialResult.error;
-
-        if (error && isMissingColumnError(error, 'commission_type')) {
-          let compatibilityQuery = supabase
+        const effectiveLimit = typeof limit === 'number' && limit > 0 ? limit : null;
+        const records: any[] = [];
+        for (let offset = 0; effectiveLimit === null || records.length < effectiveLimit; offset += SUPABASE_PAGE_SIZE) {
+          const pageSize = effectiveLimit === null ? SUPABASE_PAGE_SIZE : Math.min(SUPABASE_PAGE_SIZE, effectiveLimit - records.length);
+          let query = supabase
             .from('treatments')
-            .select('*, patients(name, balance, patient_type), doctors(name, specialization, commission_percentage, commission_per_visit)')
-            .order('date', { ascending: false });
-          if (typeof limit === 'number' && limit > 0) compatibilityQuery = compatibilityQuery.limit(limit);
-          if (locationId) compatibilityQuery = compatibilityQuery.eq('location_id', locationId);
-          const compatibilityResult = await compatibilityQuery;
-          data = compatibilityResult.data;
-          error = compatibilityResult.error;
-        }
+            .select('*, patients(name, patient_unique_id, balance, patient_type), doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)')
+            .order('date', { ascending: false })
+            .order('id')
+            .range(offset, offset + pageSize - 1);
+          if (locationId) query = query.eq('location_id', locationId);
+          if (options?.dateFrom) query = query.gte('date', options.dateFrom);
+          if (options?.dateTo) query = query.lte('date', options.dateTo);
+          if (options?.doctorId) query = query.eq('doctor_id', options.doctorId);
+          let { data, error } = await query;
 
-        if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
-          let fallbackQuery = supabase
-            .from('treatments')
-            .select('*')
-            .order('date', { ascending: false });
-
-          if (typeof limit === 'number' && limit > 0) {
-            fallbackQuery = fallbackQuery.limit(limit);
+          if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
+            let fallbackQuery = supabase
+              .from('treatments')
+              .select('*')
+              .order('date', { ascending: false })
+              .order('id')
+              .range(offset, offset + pageSize - 1);
+            if (locationId) fallbackQuery = fallbackQuery.eq('location_id', locationId);
+            if (options?.dateFrom) fallbackQuery = fallbackQuery.gte('date', options.dateFrom);
+            if (options?.dateTo) fallbackQuery = fallbackQuery.lte('date', options.dateTo);
+            if (options?.doctorId) fallbackQuery = fallbackQuery.eq('doctor_id', options.doctorId);
+            const fallback = await fallbackQuery;
+            data = fallback.data;
+            error = fallback.error;
           }
 
-          if (locationId) {
-            fallbackQuery = fallbackQuery.eq('location_id', locationId);
-          }
-
-          const fallback = await fallbackQuery;
-          data = fallback.data;
-          error = fallback.error;
+          if (error) throw error;
+          const page = data || [];
+          records.push(...page);
+          if (page.length < pageSize) break;
         }
 
-        if (error) throw error;
+        const entriesByTreatment = options?.includeCommissionEntries === false
+          ? new Map<string, any[]>()
+          : await getDoctorEarningEntriesByTreatmentIds(records.map((rec: any) => rec.id));
 
-        const entriesByTreatment = await getDoctorEarningEntriesByTreatmentIds((data || []).map((rec: any) => rec.id));
-
-        return (data || []).map((rec: any) => ({
+        return records.map((rec: any) => ({
           ...rec,
           standardCost: rec.standard_cost ?? null,
           discountAmount: Number(rec.discount_amount || 0),
@@ -3538,24 +3597,35 @@ export const api = {
                   doctorId: rec.doctor_id,
                   paymentDate: rec.date,
                   treatmentDate: rec.date,
-                  calculationMode: usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? 'flat_visit' : 'percentage',
+                  calculationMode: usesFlatVisitCommission({
+                    commissionType: rec.doctors?.commission_type,
+                    specialization: rec.doctors?.specialization
+                  }) ? 'flat_visit' : 'percentage',
                   allocatedPayment: Number(rec.cost || 0),
-                  commissionRate: Number((usesFlatVisitCommission(rec.doctors?.commission_type, rec.doctors?.specialization) ? rec.doctors?.commission_per_visit : rec.doctors?.commission_percentage) || 0),
+                  commissionRate: Number((usesFlatVisitCommission({
+                    commissionType: rec.doctors?.commission_type,
+                    specialization: rec.doctors?.specialization
+                  }) ? rec.doctors?.commission_per_visit : rec.doctors?.commission_percentage) || 0),
                   earnings: Number(rec.doctor_earnings || 0)
                 }]
               : []
           ),
           patient_name: rec.patients?.name || 'Unknown',
+          patient_unique_id: rec.patients?.patient_unique_id || undefined,
           patient_type: rec.patients?.patient_type || null,
           patient_balance: Number(rec.patients?.balance || 0),
           doctor_name: rec.doctors?.name || undefined,
           doctor_specialization: rec.doctors?.specialization || null,
-          doctor_commission_type: rec.doctors?.commission_type ? resolveDoctorCommissionType(rec.doctors.commission_type, rec.doctors?.specialization) : null,
+          doctor_commission_type: resolveDoctorCommissionType({
+            commissionType: rec.doctors?.commission_type,
+            specialization: rec.doctors?.specialization
+          }),
           doctor_commission_percentage: rec.doctors?.commission_percentage !== undefined ? Number(rec.doctors.commission_percentage || 0) : null,
           doctor_commission_per_visit: rec.doctors?.commission_per_visit !== undefined ? Number(rec.doctors.commission_per_visit || 0) : null
         }));
       } catch (err) {
         console.warn("Error fetching records:", err);
+        if (options?.throwOnError) throw err;
         return [];
       }
     },
@@ -3650,8 +3720,6 @@ export const api = {
     }) => {
       if (!data.location_id) throw new Error('location_id is required');
 
-      // 1. Validate Tooth Numbers using centralized utility
-      // Supports FDI/ISO permanent (11-48) and FDI primary (51-85)
       if (data.teeth && data.teeth.length > 0) {
         const invalidTeeth = findInvalidTeeth(data.teeth);
         if (invalidTeeth.length > 0) {
@@ -3659,203 +3727,59 @@ export const api = {
         }
       }
 
-      // 2. Fetch patient state
-      const { data: patient, error: fetchError } = await supabase
-        .from('patients')
-        .select('id, name, balance, loyalty_points')
-        .eq('id', data.patient_id)
-        .eq('location_id', data.location_id)
-        .single();
-
-      if (fetchError || !patient) throw new Error('Patient not found in this location');
-
-      // 3. Handle Medications (Constraint Validation)
-      let medicationTotal = 0;
-      const medicationResults = [];
-      if (data.medications && data.medications.length > 0) {
-        for (const med of data.medications) {
-          const { data: medicine, error: mError } = await supabase
-            .from('medicines')
-            .select('*')
-            .eq('id', med.id)
-            .single();
-          
-          if (mError || !medicine) throw new Error(`Medicine with ID ${med.id} not found`);
-          if (medicine.stock < med.qty) throw new Error(`Insufficient stock for ${medicine.name}. Available: ${medicine.stock}`);
-          
-          medicationTotal += Number(medicine.price) * med.qty;
-          medicationResults.push({ med, medicine });
-        }
-      }
-
-      // 4. Insert Treatment Record
       const treatmentDate = getLocalISODate();
-      const legacyTreatmentData = {
-        location_id: data.location_id,
-        patient_id: data.patient_id,
-        doctor_id: data.doctor_id || null,
-        teeth: data.teeth,
-        description: data.description,
-        cost: data.cost,
-        date: treatmentDate
-      };
-      // Doctor earnings are now payment-based, so a new unpaid treatment starts at 0.
-      // Payment collection and material-cost edits recalculate this persisted value.
-      const doctorEarnings = 0;
-      const treatmentData = {
-        ...legacyTreatmentData,
-        treatment_type_id: data.treatment_type_id || null,
-        standard_cost: data.standardCost ?? data.cost,
-        discount_amount: data.discountAmount ?? 0,
-        pricing_note: data.pricingNote || null,
-        doctor_earnings: doctorEarnings
-      };
-      
-      let { data: result, error: insertError } = await supabase
-        .from('treatments')
-        .insert(treatmentData)
-        .select()
-        .single();
+      const { data: rpcResult, error } = await supabase.rpc('record_treatment_atomic', {
+        p_location_id: data.location_id,
+        p_patient_id: data.patient_id,
+        p_doctor_id: data.doctor_id || null,
+        p_treatment_type_id: data.treatment_type_id || null,
+        p_teeth: data.teeth || [],
+        p_description: data.description,
+        p_cost: data.cost,
+        p_standard_cost: data.standardCost ?? data.cost,
+        p_discount_amount: data.discountAmount ?? 0,
+        p_pricing_note: data.pricingNote || null,
+        p_medications: data.medications || [],
+        p_treatment_date: treatmentDate
+      });
 
-      if (insertError && /treatment_type_id|standard_cost|discount_amount|pricing_note|schema cache/i.test(insertError.message || '')) {
-        const legacyInsert = await supabase
-          .from('treatments')
-          .insert(legacyTreatmentData)
-          .select()
-          .single();
-
-        result = legacyInsert.data
-          ? {
-              ...legacyInsert.data,
-              standard_cost: data.standardCost ?? data.cost,
-              discount_amount: data.discountAmount ?? 0,
-              pricing_note: data.pricingNote || null,
-              doctor_earnings: doctorEarnings
-            }
-          : legacyInsert.data;
-        insertError = legacyInsert.error;
-      }
-      
-      if (insertError) throw new Error(`Treatment recording failed: ${insertError.message}`);
-
-      // 5. Execute Medication Sales & Stock Updates
-      for (const res of medicationResults) {
-        await api.medicines.sell(data.patient_id, res.med.id, res.med.qty, data.location_id, result.id);
+      if (error) {
+        if (isMissingFunctionError(error, 'record_treatment_atomic')) {
+          throw new Error('Atomic treatment recording is not installed. Apply the atomic clinical workflows migration before recording treatments.');
+        }
+        throw new Error(error.message);
       }
 
-      // 6. Update Patient Balance and Points (Total = Treatment Cost + Medication Cost)
-      // Note: api.medicines.sell already updates balance and points. 
-      // We only need to update the balance/points for the TREATMENT cost here if not already handled.
-      // Actually, to keep it simple and avoid double counting, we'll let api.medicines.sell handle its part
-      // and we handle the treatment cost part here.
-      
-      const treatmentBalance = (patient.balance || 0) + data.cost;
-      
-      // Calculate points for TREATMENT only
-      const rules = await api.loyalty.getRules(data.location_id);
-      const treatmentRule = rules.find(r => r.event_type === 'TREATMENT' && r.active);
-      const pointsPerUnit = treatmentRule ? treatmentRule.points_per_unit : 0.001;
-      const minAmount = treatmentRule?.min_amount || 0;
-      
-      let earnedPoints = 0;
-      if (data.cost >= minAmount) {
-        earnedPoints = Math.floor(data.cost * pointsPerUnit);
-      }
-      
-      const newPoints = (patient.loyalty_points || 0) + earnedPoints;
+      const result = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult;
+      if (!result?.record) throw new Error('Treatment recording returned no record.');
 
-      const { error: updateError } = await supabase
-        .from('patients')
-        .update({ balance: treatmentBalance, loyalty_points: newPoints })
-        .eq('id', data.patient_id);
-
-      if (updateError) throw new Error(`Patient balance update failed: ${updateError.message}`);
-
-      if (earnedPoints > 0) {
-        await api.loyalty.addTransaction({
-          patient_id: data.patient_id,
-          location_id: data.location_id,
-          points: earnedPoints,
-          type: 'EARNED',
-          description: `Earned from treatment: ${data.description}`
-        });
-      }
-
-      let completedAppointmentIds: string[] = [];
-      try {
-        completedAppointmentIds = await completeScheduledAppointmentForTreatment({
-          locationId: data.location_id,
-          patientId: data.patient_id,
-          doctorId: data.doctor_id || null,
-          treatmentDate
-        });
-      } catch (appointmentCompletionError) {
-        console.warn('Appointment auto-completion failed after treatment recording:', appointmentCompletionError);
-      }
-      
-      // Fetch final state for return
-      const { data: finalPatient } = await supabase.from('patients').select('balance').eq('id', data.patient_id).single();
-
-      let doctorName: string | undefined;
-      if (result?.doctor_id) {
-        const { data: doctorRow } = await supabase
-          .from('doctors')
-          .select('name')
-          .eq('id', result.doctor_id)
-          .maybeSingle();
-        doctorName = doctorRow?.name || undefined;
-      }
-      
       return {
-        status: "success",
-        new_balance: finalPatient?.balance,
-        completed_appointment_ids: completedAppointmentIds,
+        ...result,
+        status: 'success',
+        completed_appointment_ids: result.completed_appointment_ids || [],
         record: {
-          ...result,
-          standardCost: result?.standard_cost ?? null,
-          doctorEarnings: Number(result?.doctor_earnings || 0),
-          discountAmount: Number(result?.discount_amount || 0),
-          pricingNote: result?.pricing_note || null,
-          doctor_name: doctorName
+          ...result.record,
+          standardCost: result.record.standard_cost ?? null,
+          doctorEarnings: Number(result.record.doctor_earnings || 0),
+          discountAmount: Number(result.record.discount_amount || 0),
+          pricingNote: result.record.pricing_note || null
         }
       };
     },
-    undoRecord: async (recordId: string, patientId: string, cost: number) => {
-      // 1. Delete the record
-      const { error: deleteError } = await supabase
-        .from('treatments')
-        .delete()
-        .eq('id', recordId);
-      
-      if (deleteError) throw new Error(deleteError.message);
+    undoRecord: async (recordId: string) => {
+      const { data, error } = await supabase.rpc('undo_treatment_atomic', {
+        p_treatment_id: recordId
+      });
+      if (error) {
+        if (isMissingFunctionError(error, 'undo_treatment_atomic')) {
+          throw new Error('Atomic treatment undo is not installed. Apply the undo treatment migration before undoing treatments.');
+        }
+        throw new Error(error.message);
+      }
 
-      // 2. Fetch current balance
-      const { data: patient, error: fetchError } = await supabase
-        .from('patients')
-        .select('balance')
-        .eq('id', patientId)
-        .single();
-
-      if (fetchError) throw new Error(fetchError.message);
-
-      // 3. Deduct the cost (revert balance)
-      const newBalance = Math.max(0, (patient?.balance || 0) - cost);
-
-      const { error: updateError } = await supabase
-        .from('patients')
-        .update({ balance: newBalance })
-        .eq('id', patientId);
-
-      if (updateError) throw new Error(updateError.message);
-
-      const { data: remainingTreatments, error: remainingError } = await supabase
-        .from('treatments')
-        .select('id')
-        .eq('patient_id', patientId);
-      if (remainingError) throw new Error(remainingError.message);
-      await recalculateDoctorEarningsForTreatments((remainingTreatments || []).map((row: any) => row.id));
-
-      return { status: "success", new_balance: newBalance };
+      const result = Array.isArray(data) ? data[0] : data;
+      if (!result?.treatment_id) throw new Error('Treatment undo returned no result.');
+      return result;
     }
   },
 
@@ -3957,6 +3881,11 @@ export const api = {
       if (trimmedPassword && !trimmedEmail) {
         throw new Error('Doctor email is required to create a doctor login account.');
       }
+      const commissionType = data.commission_type === undefined
+        ? resolveDoctorCommissionType({ specialization: data.specialization })
+        : validateDoctorCommissionType(data.commission_type);
+      const commissionPercentage = validateDoctorCommissionPercentage(data.commission_percentage);
+      const commissionPerVisit = validateDoctorCommissionPerVisit(data.commission_per_visit);
       // First create the doctor
       const { data: doctorData, error: doctorError } = await supabase
         .from('doctors')
@@ -3965,8 +3894,11 @@ export const api = {
           name: data.name,
           email: trimmedEmail || null,
           phone: data.phone,
-          specialization: data.specialization,
-          password: trimmedPassword || null
+          specialization: String(data.specialization || '').trim() || 'General',
+          commission_type: commissionType,
+          password: trimmedPassword || null,
+          commission_percentage: commissionPercentage,
+          commission_per_visit: commissionPerVisit
         })
         .select()
         .single();
@@ -4105,8 +4037,19 @@ export const api = {
         name: data.name,
         email: nextEmail || null,
         phone: data.phone,
-        specialization: data.specialization
+        specialization: data.specialization === undefined
+          ? undefined
+          : String(data.specialization || '').trim() || 'General'
       };
+      if (data.commission_percentage !== undefined) {
+        doctorUpdatePayload.commission_percentage = validateDoctorCommissionPercentage(data.commission_percentage);
+      }
+      if (data.commission_type !== undefined) {
+        doctorUpdatePayload.commission_type = validateDoctorCommissionType(data.commission_type);
+      }
+      if (data.commission_per_visit !== undefined) {
+        doctorUpdatePayload.commission_per_visit = validateDoctorCommissionPerVisit(data.commission_per_visit);
+      }
       if (trimmedPassword) {
         doctorUpdatePayload.password = trimmedPassword;
       }
@@ -4455,10 +4398,24 @@ export const api = {
       }
       return payments;
     },
-    getPayments: async (locationId?: string): Promise<PaymentRecord[]> => {
-      let query = supabase
-        .from('payments')
-        .select(`
+    getPayments: async (locationId?: string, options?: {
+      dateFrom?: string;
+      dateTo?: string;
+    }): Promise<PaymentRecord[]> => {
+      const buildPaymentQuery = (columns: string) => (from: number, to: number) => {
+        let query = supabase
+          .from('payments')
+          .select(columns)
+          .order('created_at', { ascending: false })
+          .order('id')
+          .range(from, to);
+        if (locationId) query = query.eq('location_id', locationId);
+        if (options?.dateFrom) query = query.gte('payment_date', options.dateFrom);
+        if (options?.dateTo) query = query.lte('payment_date', options.dateTo);
+        return query;
+      };
+
+      const fullColumns = `
           *,
           patients(name, balance, patient_type),
           payment_allocations (id, payment_id, payment_method, amount, reference),
@@ -4478,40 +4435,24 @@ export const api = {
               username
             )
           )
-        `)
-        .order('created_at', { ascending: false });
+        `;
 
-      if (locationId) query = query.eq('location_id', locationId);
-
-      let { data, error } = await query;
+      let { data, error } = await fetchAllRows<any>(buildPaymentQuery(fullColumns));
       if (error && isOptionalRelationAccessError(error, ['payment_allocations'])) {
-        let fallbackQuery = supabase
-          .from('payments')
-          .select('*, patients(name, balance, patient_type), payment_corrections(*, editor:users!payment_corrections_edited_by_fkey(username))')
-          .order('created_at', { ascending: false });
-        if (locationId) fallbackQuery = fallbackQuery.eq('location_id', locationId);
-        const fallback = await fallbackQuery;
+        const fallback = await fetchAllRows<any>(buildPaymentQuery(
+          '*, patients(name, balance, patient_type), payment_corrections(*, editor:users!payment_corrections_edited_by_fkey(username))'
+        ));
         data = fallback.data;
         error = fallback.error;
       }
       if (error && isMissingRelationError(error, 'payment_corrections')) {
-        let fallbackQuery = supabase
-          .from('payments')
-          .select('*, patients(name, balance, patient_type)')
-          .order('created_at', { ascending: false });
-        if (locationId) fallbackQuery = fallbackQuery.eq('location_id', locationId);
-        const fallback = await fallbackQuery;
+        const fallback = await fetchAllRows<any>(buildPaymentQuery('*, patients(name, balance, patient_type)'));
         data = fallback.data;
         error = fallback.error;
       }
 
       if (error && isOptionalRelationAccessError(error, ['patients', 'payment_allocations', 'payment_corrections', 'users'])) {
-        let fallbackQuery = supabase
-          .from('payments')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (locationId) fallbackQuery = fallbackQuery.eq('location_id', locationId);
-        const fallback = await fallbackQuery;
+        const fallback = await fetchAllRows<any>(buildPaymentQuery('*'));
         data = fallback.data;
         error = fallback.error;
       }
@@ -4534,7 +4475,7 @@ export const api = {
       treatmentIds?: string[];
       paymentDate?: string;
       submissionKey?: string | null;
-      receiptSnapshot?: Record<string, unknown> | null;
+      receiptSnapshot?: PaymentReceiptSnapshot | Record<string, unknown> | null;
       createdByUserId?: string | null;
       createdByUserName?: string | null;
     }) => {
@@ -4597,27 +4538,7 @@ export const api = {
         : rpcPayload);
 
       if (error && submissionKey && isMissingFunctionError(error, 'process_patient_payment')) {
-        const retry = await supabase.rpc('process_patient_payment', rpcPayload);
-        if (retry.error) {
-          if (isMissingFunctionError(retry.error, 'process_patient_payment')) {
-            throw new Error('Payment receipt storage is not installed. Run database/payment_receipt_snapshot_migration.sql in Supabase.');
-          }
-          throw new Error(retry.error.message);
-        }
-
-        const retryRow = Array.isArray(retry.data) ? retry.data[0] : retry.data;
-        if (!retryRow) throw new Error('Payment was not recorded.');
-
-        const payment: PaymentRecord = mapPaymentRow(retryRow);
-        await recalculateDoctorEarningsForTreatments(await resolvePaymentCommissionTreatmentIds(payment));
-
-        return {
-          status: 'success',
-          new_balance: payment.remainingBalance,
-          amount_collected: payment.amount,
-          cleared_amount: payment.clearedAmount ?? payment.amount,
-          payment
-        };
+        throw new Error('Idempotent payment storage is not installed. Apply the payment submission idempotency migration before collecting payments.');
       }
 
       if (error) {
@@ -5712,19 +5633,20 @@ export const api = {
   expenses: {
     getAll: async (locationId?: string): Promise<Expense[]> => {
       try {
-        let query = supabase
-          .from('expenses')
-          .select('*')
-          .order('date', { ascending: false });
-        
-        if (locationId) {
-          query = query.eq('location_id', locationId);
-        }
-
-          const { data, error } = await query;
+          const { data, error } = await fetchAllRows<Expense>((from, to) => {
+            let query = supabase
+              .from('expenses')
+              .select('*')
+              .order('date', { ascending: false })
+              .order('id')
+              .range(from, to);
+            if (locationId) query = query.eq('location_id', locationId);
+            return query;
+          });
           if (error) throw error;
           const storedExpenses = (data || []) as Expense[];
-          const syntheticMaterialExpenses = await fetchSyntheticMaterialCostExpenses(locationId, storedExpenses);
+          const syntheticMaterialExpenses = await fetchSyntheticMaterialCostExpenses(locationId, storedExpenses)
+            .catch(() => []);
           return [...storedExpenses, ...syntheticMaterialExpenses]
             .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
         } catch (err) {
@@ -5788,6 +5710,35 @@ export const api = {
         id: data.id,
         location_id: data.location_id,
         doctor_id: supportsDoctorId ? (data.doctor_id || null) : null,
+        username: data.username,
+        role: data.role,
+        allowed_tabs: resolveAllowedTabs(data.role, supportsAllowedTabs ? data.allowed_tabs : undefined),
+        created_at: data.created_at,
+        updated_at: data.updated_at
+      };
+    },
+    getByDoctorId: async (doctorId: string): Promise<User | null> => {
+      if (!doctorId) return null;
+
+      const supportsAllowedTabs = await detectUsersAllowedTabsSupport();
+      const supportsDoctorId = await detectUsersDoctorIdSupport();
+      if (!supportsDoctorId) return null;
+
+      const { data, error } = await supabase
+        .from('users')
+        .select(supportsAllowedTabs
+          ? 'id, location_id, username, role, allowed_tabs, created_at, updated_at, doctor_id'
+          : 'id, location_id, username, role, created_at, updated_at, doctor_id')
+        .eq('doctor_id', doctorId)
+        .maybeSingle() as { data: User | null, error: any };
+
+      if (error) throw new Error(error.message);
+      if (!data) return null;
+
+      return {
+        id: data.id,
+        location_id: data.location_id,
+        doctor_id: data.doctor_id || null,
         username: data.username,
         role: data.role,
         allowed_tabs: resolveAllowedTabs(data.role, supportsAllowedTabs ? data.allowed_tabs : undefined),
@@ -5900,14 +5851,7 @@ export const api = {
 
             if (linkedUserError) {
               console.warn('Doctor email matched, but linked staff user lookup failed:', linkedUserError.message);
-              return {
-                id: doctor.id,
-                location_id: doctor.location_id || null,
-                doctor_id: doctor.id,
-                username: doctor.email,
-                role: 'normal',
-                allowed_tabs: DOCTOR_DASHBOARD_TABS
-              };
+              throw new Error('Unable to verify the linked doctor login account. Please try again.');
             }
 
             if (linkedUser) {
@@ -5920,21 +5864,14 @@ export const api = {
             }
 
             console.log('Authentication successful for doctor email without linked staff user:', trimmedUsername);
-            return {
-              id: doctor.id,
-              location_id: doctor.location_id || null,
-              doctor_id: doctor.id,
-              username: doctor.email,
-              role: 'normal',
-              allowed_tabs: DOCTOR_DASHBOARD_TABS
-            };
+            throw new Error('This doctor login account is incomplete. Please ask an administrator to update the doctor account.');
           }
         }
 
         return null;
       } catch (err) {
         console.error("Error authenticating user:", err);
-        return null;
+        throw err;
       }
     },
     create: async (data: Partial<User>): Promise<User> => {
@@ -6323,149 +6260,101 @@ export const api = {
 
       if (error) throw new Error(error.message);
     },
-    sell: async (patientId: string, medicineId: string, quantity: number, locationId: string, treatmentId?: string): Promise<{ sale: MedicineSale; new_stock: number }> => {
+    sell: async (patientId: string, medicineId: string, quantity: number, locationId: string, treatmentId?: string, finalTotal?: number): Promise<{ sale: MedicineSale; new_stock: number }> => {
       if (!locationId) throw new Error('locationId is required for medicine sales');
       const parsedQuantity = Number(quantity);
       if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
         throw new Error('Quantity must be greater than 0');
       }
-
-      // 1. Get medicine and patient state (Planning/State Fetching)
-      const { data: medicine, error: mError } = await supabase
-        .from('medicines')
-        .select('*')
-        .eq('id', medicineId)
-        .eq('location_id', locationId)
-        .single();
-
-      if (mError || !medicine) throw new Error('Medicine not found in this location');
-      if (Number(medicine.stock) < parsedQuantity) {
-        throw new Error(`Insufficient stock. Available: ${medicine.stock} ${medicine.unit}`);
+      const parsedFinalTotal = finalTotal === undefined ? null : Number(finalTotal);
+      if (parsedFinalTotal !== null && (!Number.isFinite(parsedFinalTotal) || parsedFinalTotal < 0)) {
+        throw new Error('Final medicine charge must be at least 0');
       }
 
-      const { data: patient, error: pError } = await supabase
-        .from('patients')
-        .select('id, name, balance, loyalty_points')
-        .eq('id', patientId)
-        .eq('location_id', locationId)
-        .single();
+      const { data: rpcResult, error } = await supabase.rpc('sell_medicine_atomic', {
+        p_location_id: locationId,
+        p_patient_id: patientId,
+        p_medicine_id: medicineId,
+        p_quantity: parsedQuantity,
+        p_treatment_id: treatmentId || null,
+        p_sale_date: getLocalISODate(),
+        p_final_total: parsedFinalTotal
+      });
 
-      if (pError || !patient) throw new Error('Patient not found in this location');
-
-      const totalPrice = Number(medicine.price) * parsedQuantity;
-      const newStock = Number(medicine.stock) - parsedQuantity;
-
-      // 2. Create sale record
-      const saleData = {
-        location_id: locationId,
-        patient_id: patientId,
-        medicine_id: medicineId,
-        quantity: parsedQuantity,
-        unit_price: medicine.price,
-        total_price: totalPrice,
-        date: new Date().toISOString().split('T')[0],
-        treatment_id: treatmentId || null
-      };
-
-      const { data: saleResult, error: saleError } = await supabase
-        .from('medicine_sales')
-        .insert(saleData)
-        .select('*')
-        .single();
-
-      if (saleError) throw new Error(`Sale failed: ${saleError.message}`);
-
-      // 3. Update stock (decrement)
-      const { error: stockError } = await supabase
-        .from('medicines')
-        .update({ stock: newStock })
-        .eq('id', medicineId)
-        .gte('stock', parsedQuantity); // Atomicity check: ensure stock hasn't changed
-
-      if (stockError) throw new Error(`Stock update failed: ${stockError.message}`);
-
-      // 4. Update patient balance and points
-      const newBalance = (patient.balance || 0) + totalPrice;
-      
-      // Calculate points based on active rules
-      const rules = await api.loyalty.getRules(locationId);
-      const purchaseRule = rules.find(r => r.event_type === 'PURCHASE' && r.active);
-      const pointsPerUnit = purchaseRule ? purchaseRule.points_per_unit : 0.001;
-      const minAmount = purchaseRule?.min_amount || 0;
-      
-      let earnedPoints = 0;
-      if (totalPrice >= minAmount) {
-        earnedPoints = Math.floor(totalPrice * pointsPerUnit);
+      if (error) {
+        if (isMissingFunctionError(error, 'sell_medicine_atomic')) {
+          throw new Error('Atomic medicine sales are not installed. Apply the atomic clinical workflows migration before selling medicine.');
+        }
+        throw new Error(error.message);
       }
-      
-      const newPoints = (patient.loyalty_points || 0) + earnedPoints;
-      
-      const { error: pUpdateError } = await supabase
-        .from('patients')
-        .update({ balance: newBalance, loyalty_points: newPoints })
-        .eq('id', patientId);
 
-      if (pUpdateError) throw new Error(`Patient update failed: ${pUpdateError.message}`);
-          
-      if (earnedPoints > 0) {
-        await api.loyalty.addTransaction({
-          patient_id: patientId,
-          location_id: locationId,
-          points: earnedPoints,
-          type: 'EARNED',
-          description: `Earned from medicine purchase: ${medicine.name} (Qty: ${parsedQuantity})`
-        });
-      }
+      const result = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult;
+      if (!result?.sale) throw new Error('Medicine sale returned no record.');
 
       return {
         sale: {
-          id: saleResult.id,
-          location_id: saleResult.location_id,
-          patient_id: saleResult.patient_id,
-          patient_name: patient.name || 'Unknown',
-          medicine_id: saleResult.medicine_id,
-          medicine_name: medicine.name || 'Unknown',
-          medicine_unit: medicine.unit || undefined,
-          quantity: saleResult.quantity,
-          unit_price: saleResult.unit_price,
-          total_price: saleResult.total_price,
-          date: saleResult.date,
-          treatment_id: saleResult.treatment_id,
-          created_at: saleResult.created_at
+          ...result.sale,
+          quantity: Number(result.sale.quantity),
+          unit_price: Number(result.sale.unit_price),
+          total_price: Number(result.sale.total_price),
+          standard_total: Number(result.sale.standard_total ?? result.sale.total_price),
+          discount_amount: Number(result.sale.discount_amount || 0),
+          pricing_note: result.sale.pricing_note || null
         },
-        new_stock: newStock
+        new_stock: Number(result.new_stock)
+      };
+    },
+    undoSale: async (saleId: string): Promise<{
+      medicine_sale_id: string;
+      medicine_id: string;
+      patient_id: string;
+      quantity_restocked: number;
+      new_stock: number;
+      new_balance: number;
+      new_points: number;
+      reversed_points: number;
+      loyalty_reversal: LoyaltyTransaction | null;
+    }> => {
+      const { data, error } = await supabase.rpc('undo_medicine_sale_atomic', {
+        p_medicine_sale_id: saleId
+      });
+      if (error) {
+        if (isMissingFunctionError(error, 'undo_medicine_sale_atomic')) {
+          throw new Error('Atomic medicine record undo is not installed. Apply the medicine record undo migration before deleting medicine records.');
+        }
+        throw new Error(error.message);
+      }
+
+      const result = Array.isArray(data) ? data[0] : data;
+      if (!result?.medicine_sale_id) throw new Error('Medicine record undo returned no result.');
+      return {
+        ...result,
+        quantity_restocked: Number(result.quantity_restocked),
+        new_stock: Number(result.new_stock),
+        new_balance: Number(result.new_balance),
+        new_points: Number(result.new_points),
+        reversed_points: Number(result.reversed_points || 0),
+        loyalty_reversal: result.loyalty_reversal || null
       };
     },
     getSales: async (locationId?: string, patientId?: string, options?: { throwOnError?: boolean }): Promise<MedicineSale[]> => {
       try {
-        let query = supabase
-          .from('medicine_sales')
-          .select('*, patients(name), medicines(name, unit)')
-          .order('date', { ascending: false });
+        const buildSalesQuery = (columns: string) => (from: number, to: number) => {
+          let query = supabase
+            .from('medicine_sales')
+            .select(columns)
+            .order('date', { ascending: false })
+            .order('id')
+            .range(from, to);
+          if (locationId) query = query.eq('location_id', locationId);
+          if (patientId) query = query.eq('patient_id', patientId);
+          return query;
+        };
 
-        if (locationId) {
-          query = query.eq('location_id', locationId);
-        }
-        if (patientId) {
-          query = query.eq('patient_id', patientId);
-        }
-
-        let { data, error } = await query;
+        let { data, error } = await fetchAllRows<any>(buildSalesQuery('*, patients(name), medicines(name, unit)'));
 
         if (error && isOptionalRelationAccessError(error, ['patients', 'medicines'])) {
-          let fallbackQuery = supabase
-            .from('medicine_sales')
-            .select('*')
-            .order('date', { ascending: false });
-
-          if (locationId) {
-            fallbackQuery = fallbackQuery.eq('location_id', locationId);
-          }
-          if (patientId) {
-            fallbackQuery = fallbackQuery.eq('patient_id', patientId);
-          }
-
-          const fallback = await fallbackQuery;
+          const fallback = await fetchAllRows<any>(buildSalesQuery('*'));
           data = fallback.data;
           error = fallback.error;
         }
@@ -6480,9 +6369,12 @@ export const api = {
           medicine_id: sale.medicine_id,
           medicine_name: sale.medicines?.name || 'Unknown',
           medicine_unit: sale.medicines?.unit || undefined,
-          quantity: sale.quantity,
-          unit_price: sale.unit_price,
-          total_price: sale.total_price,
+          quantity: Number(sale.quantity),
+          unit_price: Number(sale.unit_price),
+          total_price: Number(sale.total_price),
+          standard_total: Number(sale.standard_total ?? sale.total_price),
+          discount_amount: Number(sale.discount_amount || 0),
+          pricing_note: sale.pricing_note || null,
           date: sale.date,
           treatment_id: sale.treatment_id,
           created_at: sale.created_at
@@ -6495,28 +6387,21 @@ export const api = {
     },
     getTopSelling: async (locationId?: string, limit: number = 10): Promise<{ medicine_id: string; medicine_name: string; total_quantity: number; total_revenue: number }[]> => {
       try {
-        let query = supabase
-          .from('medicine_sales')
-          .select('medicine_id, medicines(name), quantity, total_price');
-
-        if (locationId) {
-          query = query.eq('location_id', locationId);
-        }
-
-        const initialResult = await query;
+        const buildTopSellingQuery = (columns: string) => (from: number, to: number) => {
+          let query = supabase
+            .from('medicine_sales')
+            .select(columns)
+            .order('id')
+            .range(from, to);
+          if (locationId) query = query.eq('location_id', locationId);
+          return query;
+        };
+        const initialResult = await fetchAllRows<any>(buildTopSellingQuery('medicine_id, medicines(name), quantity, total_price'));
         let data: any[] | null = initialResult.data;
         let error: any = initialResult.error;
 
         if (error && isOptionalRelationAccessError(error, ['medicines'])) {
-          let fallbackQuery = supabase
-            .from('medicine_sales')
-            .select('medicine_id, quantity, total_price');
-
-          if (locationId) {
-            fallbackQuery = fallbackQuery.eq('location_id', locationId);
-          }
-
-          const fallback = await fallbackQuery;
+          const fallback = await fetchAllRows<any>(buildTopSellingQuery('medicine_id, quantity, total_price'));
           data = fallback.data;
           error = fallback.error;
         }
@@ -6677,15 +6562,17 @@ export const api = {
   loyalty: {
     getTransactions: async (patientId: string, locationId?: string): Promise<LoyaltyTransaction[]> => {
       try {
-        let query = supabase
-          .from('loyalty_transactions')
-          .select('*')
-          .eq('patient_id', patientId)
-          .order('date', { ascending: false });
-        if (locationId) {
-          query = query.eq('location_id', locationId);
-        }
-        const { data, error } = await query;
+        const { data, error } = await fetchAllRows<LoyaltyTransaction>((from, to) => {
+          let query = supabase
+            .from('loyalty_transactions')
+            .select('*')
+            .eq('patient_id', patientId)
+            .order('date', { ascending: false })
+            .order('id')
+            .range(from, to);
+          if (locationId) query = query.eq('location_id', locationId);
+          return query;
+        });
         if (error) throw error;
         return data || [];
       } catch (err) {
@@ -6923,24 +6810,21 @@ export const api = {
           created_at
         `;
 
-      let query = supabase
-        .from('conversations')
-        .select(selectClause)
-        .order('last_message_time', { ascending: false, nullsFirst: false });
-
-      if (userType === 'patient') {
-        query = query.eq('patient_id', userId);
-      } else {
-        query = query.eq('admin_id', userId);
-      }
-
-      if (locationId) {
-        // Include conversations for this branch OR conversations without a location
-        // (created before the branch feature was added)
-        query = query.or(`location_id.eq.${locationId},location_id.is.null`);
-      }
-
-      const { data: conversations, error } = await query;
+      const { data: conversations, error } = await fetchAllRows<any>((from, to) => {
+        let query = supabase
+          .from('conversations')
+          .select(selectClause)
+          .order('last_message_time', { ascending: false, nullsFirst: false })
+          .order('id')
+          .range(from, to);
+        query = userType === 'patient' ? query.eq('patient_id', userId) : query.eq('admin_id', userId);
+        if (locationId) {
+          // Include conversations for this branch OR conversations without a location
+          // (created before the branch feature was added)
+          query = query.or(`location_id.eq.${locationId},location_id.is.null`);
+        }
+        return query;
+      });
       
       if (error) throw new Error(error.message);
 
@@ -6982,15 +6866,25 @@ export const api = {
       
       // Get unread message counts for each conversation
       const conversationIds = conversations.map((conv: any) => conv.id);
-      let unreadQuery = supabase
-        .from('messages')
-        .select('conversation_id, recipient_id, recipient_type, read')
-        .in('conversation_id', conversationIds)
-        .eq('recipient_id', userId)
-        .eq('recipient_type', userType)
-        .eq('read', false);
-
-      const { data: unreadMessages, error: unreadError } = await unreadQuery;
+      const unreadMessages: any[] = [];
+      let unreadError: any = null;
+      for (let index = 0; index < conversationIds.length; index += 25) {
+        const conversationIdBatch = conversationIds.slice(index, index + 25);
+        const result = await fetchAllRows<any>((from, to) => supabase
+          .from('messages')
+          .select('id, conversation_id, recipient_id, recipient_type, read')
+          .in('conversation_id', conversationIdBatch)
+          .eq('recipient_id', userId)
+          .eq('recipient_type', userType)
+          .eq('read', false)
+          .order('id')
+          .range(from, to));
+        if (result.error) {
+          unreadError = result.error;
+          break;
+        }
+        unreadMessages.push(...(result.data || []));
+      }
       
       if (unreadError) {
         console.warn('Error fetching unread message counts:', unreadError.message);
@@ -7012,11 +6906,13 @@ export const api = {
       // Perform automatic cleanup before fetching messages
       await api.messages.performAutomaticCleanup();
       
-      const { data, error } = await supabase
+      const { data, error } = await fetchAllRows<Message>((from, to) => supabase
         .from('messages')
         .select('*')
         .eq('conversation_id', conversationId)
-        .order('timestamp', { ascending: true });
+        .order('timestamp', { ascending: true })
+        .order('id')
+        .range(from, to));
       
       if (error) throw new Error(error.message);
       return data || [];
