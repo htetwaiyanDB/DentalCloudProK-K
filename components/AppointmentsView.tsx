@@ -13,6 +13,20 @@ import ExportMenu from './ExportMenu';
 import PatientQRScanButton from './PatientQRScanButton';
 import { SearchableSelect } from './SearchableSelect';
 
+// Local ISO date key (YYYY-MM-DD) used by the calendar grid and day preview.
+const toISODateKey = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const addDaysToDate = (date: Date, days: number): Date => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
 interface AppointmentsViewProps {
   appointments: Appointment[];
   patients: Patient[];
@@ -108,7 +122,8 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [doctorFilter, setDoctorFilter] = useState('');
   const [treatmentFilter, setTreatmentFilter] = useState('');
   const [calendarDate, setCalendarDate] = useState(new Date());
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
+  // Default the day preview to today so the calendar is not empty on load.
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(() => toISODateKey(new Date()));
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [appointmentToDelete, setAppointmentToDelete] = useState<string | null>(null);
   const [doctorCorrectionAppointment, setDoctorCorrectionAppointment] = useState<Appointment | null>(null);
@@ -144,7 +159,13 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const applyQuickDateFilter = (filter: 'all' | 'tomorrow' | 'today') => {
     setDateQuickFilter(filter);
     setDateFilter('');
-    setSelectedCalendarDate(null);
+    setSelectedCalendarDate(
+      filter === 'today'
+        ? toISODateKey(new Date())
+        : filter === 'tomorrow'
+          ? toISODateKey(addDaysToDate(new Date(), 1))
+          : null
+    );
     resetAppointmentPages();
   };
 
@@ -166,7 +187,13 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   useEffect(() => {
     setDateQuickFilter(initialDateQuickFilter);
     setDateFilter('');
-    setSelectedCalendarDate(null);
+    setSelectedCalendarDate(
+      initialDateQuickFilter === 'today'
+        ? toISODateKey(new Date())
+        : initialDateQuickFilter === 'tomorrow'
+          ? toISODateKey(addDaysToDate(new Date(), 1))
+          : null
+    );
     resetAppointmentPages();
   }, [initialDateQuickFilter]);
 
