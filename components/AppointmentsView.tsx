@@ -13,6 +13,14 @@ import ExportMenu from './ExportMenu';
 import PatientQRScanButton from './PatientQRScanButton';
 import { SearchableSelect } from './SearchableSelect';
 
+// Local ISO date key (YYYY-MM-DD) used for the calendar day-preview default.
+const toISODayKey = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 interface AppointmentsViewProps {
   appointments: Appointment[];
   patients: Patient[];
@@ -108,7 +116,8 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [doctorFilter, setDoctorFilter] = useState('');
   const [treatmentFilter, setTreatmentFilter] = useState('');
   const [calendarDate, setCalendarDate] = useState(new Date());
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
+  // Default the day preview to today so the calendar is not empty on load.
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(() => toISODayKey(new Date()));
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [appointmentToDelete, setAppointmentToDelete] = useState<string | null>(null);
   const [doctorCorrectionAppointment, setDoctorCorrectionAppointment] = useState<Appointment | null>(null);
