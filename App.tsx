@@ -1566,6 +1566,9 @@ const App: React.FC = () => {
     doctor: string;
     treatment: string;
     page: number;
+    viewMode: 'current' | 'calendar';
+    calendarDateFrom?: string;
+    calendarDateTo?: string;
   }) => {
     const locationId = currentLocationId || undefined;
     if (!locationId) return;
@@ -1575,7 +1578,9 @@ const App: React.FC = () => {
     const toLocalISODate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const date = query.dateQuickFilter === 'today'
+    const date = query.viewMode === 'calendar'
+      ? undefined
+      : query.dateQuickFilter === 'today'
       ? toLocalISODate(now)
       : query.dateQuickFilter === 'tomorrow'
         ? toLocalISODate(tomorrow)
@@ -1602,8 +1607,10 @@ const App: React.FC = () => {
     try {
       const result = await api.appointments.list(locationId, {
         date,
-        page: query.page,
-        pageSize: 100,
+        dateFrom: query.viewMode === 'calendar' ? query.calendarDateFrom : undefined,
+        dateTo: query.viewMode === 'calendar' ? query.calendarDateTo : undefined,
+        page: query.viewMode === 'calendar' ? 1 : query.page,
+        pageSize: query.viewMode === 'calendar' ? 1000 : 100,
         search: query.search,
         doctorIds,
         treatment: query.treatment

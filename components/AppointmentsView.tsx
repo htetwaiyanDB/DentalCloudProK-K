@@ -69,6 +69,9 @@ interface AppointmentsViewProps {
     doctor: string;
     treatment: string;
     page: number;
+    viewMode: 'current' | 'calendar';
+    calendarDateFrom?: string;
+    calendarDateTo?: string;
   }) => void;
 }
 
@@ -181,16 +184,25 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
   useEffect(() => {
     if (!onQueryChange) return;
+    const calendarDateFrom = viewMode === 'calendar'
+      ? toLocalISODate(new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1))
+      : undefined;
+    const calendarDateTo = viewMode === 'calendar'
+      ? toLocalISODate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 0))
+      : undefined;
     const timer = window.setTimeout(() => onQueryChange({
       dateQuickFilter,
       date: dateFilter,
       search: searchTerm,
       doctor: doctorFilter,
       treatment: treatmentFilter,
-      page: currentPage
+      page: currentPage,
+      viewMode,
+      calendarDateFrom,
+      calendarDateTo
     }), searchTerm ? 300 : 0);
     return () => window.clearTimeout(timer);
-  }, [dateQuickFilter, dateFilter, searchTerm, doctorFilter, treatmentFilter, currentPage, onQueryChange]);
+  }, [dateQuickFilter, dateFilter, searchTerm, doctorFilter, treatmentFilter, currentPage, viewMode, calendarDate, onQueryChange]);
 
   const tomorrowISO = useMemo(() => {
     const nextDay = new Date();
@@ -1147,7 +1159,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                   return (
                     <button
                       key={`${cell.isoDate || 'empty'}-${idx}`}
-                      onClick={() => cell.isoDate && applySingleDateFilter(cell.isoDate)}
+                      onClick={() => cell.isoDate && setSelectedCalendarDate(cell.isoDate)}
                       disabled={!cell.isoDate}
                       className={`min-h-[36px] md:min-h-[80px] text-left border rounded md:rounded-xl p-0.5 md:p-2 transition-colors ${
                         !cell.inCurrentMonth
@@ -1176,23 +1188,12 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                               <div className="text-[9px] md:text-[10px] text-gray-500">+{dayAppointments.length - 2} more</div>
                             )}
                           </div>
-                          {/* Mobile: show dot indicators for appointments */}
-                          <div className="flex md:hidden gap-0.5 mt-0.5 flex-wrap">
-                            {dayAppointments.slice(0, 4).map((apt) => (
-                              <span
-                                key={apt.id}
-                                className={`inline-block w-1.5 h-1.5 rounded-full ${
-                                  apt.status === 'Scheduled' ? 'bg-blue-500' :
-                                  apt.status === 'Completed' ? 'bg-emerald-500' :
-                                  'bg-red-400'
-                                }`}
-                                title={`${formatTime(apt.time)} - ${apt.patient_name || 'Unknown Patient'}`}
-                              />
-                            ))}
-                            {dayAppointments.length > 4 && (
-                              <span className="text-[8px] text-gray-400">+{dayAppointments.length - 4}</span>
-                            )}
-                          </div>
+                          {/* Mobile: make booked days obvious without requiring a tap. */}
+                          {dayAppointments.length > 0 && (
+                            <div className="md:hidden mt-0.5 inline-flex max-w-full items-center rounded bg-blue-100 px-1 py-0.5 text-[8px] font-bold leading-none text-blue-700">
+                              {dayAppointments.length} {dayAppointments.length === 1 ? 'appt' : 'appts'}
+                            </div>
+                          )}
                         </>
                       )}
                     </button>

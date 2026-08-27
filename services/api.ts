@@ -2363,6 +2363,8 @@ export const api = {
       locationId: string | undefined,
       options: {
         date?: string;
+        dateFrom?: string;
+        dateTo?: string;
         page?: number;
         pageSize?: number;
         search?: string;
@@ -2370,7 +2372,7 @@ export const api = {
         treatment?: string;
       } = {}
     ): Promise<{ appointments: Appointment[]; total: number }> => {
-      const pageSize = Math.min(Math.max(options.pageSize || 100, 1), 100);
+      const pageSize = Math.min(Math.max(options.pageSize || 100, 1), 1000);
       const page = Math.max(options.page || 1, 1);
       const safeTerm = (value: string) => value.replace(/[%,_(),]/g, ' ').trim();
       const search = safeTerm(options.search || '');
@@ -2396,6 +2398,8 @@ export const api = {
 
         if (locationId) query = query.eq('location_id', locationId);
         if (options.date) query = query.eq('date', options.date);
+        if (options.dateFrom) query = query.gte('date', options.dateFrom);
+        if (options.dateTo) query = query.lte('date', options.dateTo);
         if (options.doctorIds?.length) query = query.in('doctor_id', options.doctorIds);
         if (treatment) query = query.or(`type.ilike.%${treatment}%,notes.ilike.%${treatment}%`);
         if (search) {
