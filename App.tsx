@@ -2645,7 +2645,7 @@ const App: React.FC = () => {
     if (isSubmitting) return;
     const targetLocationId = (newAppointmentData.location_id || '').trim() || currentLocationId;
     if (!targetLocationId) {
-      alert('Please select a branch/location for this appointment.');
+      setToast({ show: true, message: 'Please select a branch/location for this appointment.', type: 'error' });
       return;
     }
     setIsSubmitting(true);
@@ -2719,6 +2719,40 @@ const App: React.FC = () => {
           throw new Error('Please provide a reschedule reason before updating the appointment date.');
         }
 
+        const existingDoctorId = String(editingAppointment.doctor_id || '').trim();
+        const requestedDoctorId = String(payload.doctor_id || '').trim();
+        const isDoctorChanged = existingDoctorId !== requestedDoctorId;
+        if (isDoctorChanged) {
+          if (!isAdmin) {
+            throw new Error('Only an administrator can change the assigned doctor.');
+          }
+          if (!requestedDoctorId) {
+            throw new Error('Choose a doctor. Removing a doctor assignment requires the Correct Doctor workflow.');
+          }
+
+          const currentStaffSession = auth.getSession();
+          if (!currentStaffSession?.staffAuthToken || !currentStaffSession.userId) {
+            throw new Error('A valid administrator session is required. Sign in again and retry.');
+          }
+
+          const correctionPreview = await api.appointments.getDoctorCorrectionPreview(
+            editingAppointment.id,
+            { userId: currentStaffSession.userId, authToken: currentStaffSession.staffAuthToken }
+          );
+          if (correctionPreview.treatments.length > 0) {
+            throw new Error('This visit has related treatment records. Use Correct Doctor from the appointment actions to review and reassign them safely.');
+          }
+
+          await api.appointments.correctDoctor({
+            appointmentId: editingAppointment.id,
+            expectedOldDoctorId: editingAppointment.doctor_id || null,
+            newDoctorId: requestedDoctorId,
+            treatmentIds: [],
+            reason: 'Doctor changed by administrator while editing the appointment.',
+            actor: { userId: currentStaffSession.userId, authToken: currentStaffSession.staffAuthToken }
+          });
+        }
+
         await api.appointments.update(
           editingAppointment.id,
           payload,
@@ -2753,7 +2787,11 @@ const App: React.FC = () => {
       setEditingAppointment(null);
       resetAppointmentForm();
     } catch (err: any) {
-      alert(err.message);
+      setToast({
+        show: true,
+        message: `Failed to ${editingAppointment ? 'update' : 'create'} appointment: ${err.message || 'An unexpected error occurred.'}`,
+        type: 'error'
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -5063,19 +5101,22 @@ const App: React.FC = () => {
                   <div className="relative">
                     <input
                       type="text"
-                      className="w-full border-gray-200 border rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 pr-10"
+                      disabled={Boolean(editingAppointment) && !isAdmin}
+                      className="w-full border-gray-200 border rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 pr-10 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
                       placeholder="Search doctor..."
                       value={doctorSearchQuery}
                       onChange={(e) => {
                         setDoctorSearchQuery(e.target.value);
                         setShowDoctorDropdown(true);
                       }}
-                      onFocus={() => setShowDoctorDropdown(true)}
+                      onFocus={() => {
+                        if (!editingAppointment || isAdmin) setShowDoctorDropdown(true);
+                      }}
                       onBlur={() => {
                         setTimeout(() => setShowDoctorDropdown(false), 200);
                       }}
                     />
-                    {newAppointmentData.doctor_id && (
+                    {newAppointmentData.doctor_id && (!editingAppointment || isAdmin) && (
                       <button
                         type="button"
                         onClick={() => {
@@ -5091,7 +5132,7 @@ const App: React.FC = () => {
                     )}
                   </div>
 
-                  {showDoctorDropdown && (
+                  {showDoctorDropdown && (!editingAppointment || isAdmin) && (
                     <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
                       <button
                         type="button"
@@ -5130,6 +5171,16 @@ const App: React.FC = () => {
                     </div>
                   )}
                 </div>
+                {editingAppointment && !isAdmin && (
+                  <p className="mt-1.5 text-xs font-medium text-amber-700">
+                    Only an administrator can change the assigned doctor.
+                  </p>
+                )}
+                {editingAppointment && isAdmin && (
+                  <p className="mt-1.5 text-xs font-medium text-indigo-600">
+                    Doctor changes are saved through the secure correction workflow. Visits with treatment records require Correct Doctor review.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-[10px] font-black text-gray-500 uppercase mb-1.5">Type</label>

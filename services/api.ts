@@ -21,6 +21,7 @@ import { chunkMonthlyReportPatientIds, type MonthlyReportSourceRecord } from '..
 import { chunkUniqueIds, mapWithConcurrency, REPORT_REQUEST_CONCURRENCY } from '../utils/reportBatching';
 import { normalizeMaterialCostPresetInputs, sortMaterialCostPresets } from '../utils/materialCostPresets';
 import { buildDoctorDirectWritePayload } from '../utils/doctorWritePayload';
+import { excludeProtectedDoctorChange } from '../utils/appointmentDoctorUpdate';
 
 let usersAllowedTabsSupport: boolean | null = null;
 let usersDoctorIdSupport: boolean | null = null;
@@ -2770,13 +2771,18 @@ export const api = {
         }
       }
 
+      const appointmentDataWithoutDoctor = excludeProtectedDoctorChange(
+        data as Partial<Appointment> & Record<string, unknown>,
+        existingAppointment.doctor_id
+      );
+
       const {
         guest_email: _guestEmail,
         guest_age: _guestAge,
         guest_address: _guestAddress,
         guest_password: _guestPassword,
         ...appointmentData
-      } = data as Partial<Appointment> & {
+      } = appointmentDataWithoutDoctor as Partial<Appointment> & {
         guest_email?: unknown;
         guest_age?: unknown;
         guest_address?: unknown;
@@ -2788,9 +2794,6 @@ export const api = {
         status: shouldComplete ? undefined : data.status,
         patient_id: Object.prototype.hasOwnProperty.call(data, 'patient_id')
           ? (data.patient_id || null)
-          : undefined,
-        doctor_id: Object.prototype.hasOwnProperty.call(data, 'doctor_id')
-          ? (data.doctor_id && String(data.doctor_id).trim() !== '' ? data.doctor_id : null)
           : undefined
       };
 
