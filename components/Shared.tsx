@@ -354,7 +354,7 @@ interface ToastProps {
   duration?: number;
 }
 
-export const Toast: React.FC<ToastProps> = ({ message, type = 'success', onClose, duration = 400 }) => {
+export const Toast: React.FC<ToastProps> = ({ message, type = 'success', onClose, duration = 4500 }) => {
   useEffect(() => {
     const timer = setTimeout(() => {
       onClose();

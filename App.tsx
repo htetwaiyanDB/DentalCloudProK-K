@@ -2832,12 +2832,12 @@ const App: React.FC = () => {
 
     const trimmedDoctorPassword = (newDoctorData.password || '').trim();
     if (!editingDoctor && !trimmedDoctorPassword) {
-      alert('Password is required for a new doctor account.');
+      setToast({ show: true, message: 'Password is required for a new doctor account.', type: 'error' });
       setIsSubmitting(false);
       return;
     }
     if (trimmedDoctorPassword && !(newDoctorData.email || '').trim()) {
-      alert('Doctor email is required when setting a doctor password.');
+      setToast({ show: true, message: 'Doctor email is required when setting a doctor password.', type: 'error' });
       setIsSubmitting(false);
       return;
     }
@@ -2846,7 +2846,7 @@ const App: React.FC = () => {
       (newDoctorData.location_id || '').trim()
     ].filter(Boolean)));
     if (targetDoctorLocationIds.length === 0) {
-      alert('Please select at least one branch/location for this doctor.');
+      setToast({ show: true, message: 'Please select at least one branch/location for this doctor.', type: 'error' });
       setIsSubmitting(false);
       return;
     }
@@ -2860,7 +2860,11 @@ const App: React.FC = () => {
       const start = new Date(`2000-01-01T${sched.start_time}`);
       const end = new Date(`2000-01-01T${sched.end_time}`);
       if (end <= start) {
-        alert(`Invalid schedule: End time must be after start time for ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][sched.day_of_week]}`);
+        setToast({
+          show: true,
+          message: `Invalid schedule: End time must be after start time for ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][sched.day_of_week]}.`,
+          type: 'error'
+        });
         return false;
       }
       return true;
@@ -2874,7 +2878,7 @@ const App: React.FC = () => {
     // Check for duplicate day_of_week entries
     const daySet = new Set(schedules.map(s => s.day_of_week));
     if (daySet.size !== schedules.length) {
-      alert('Error: You cannot have multiple schedules for the same day. Please combine them into one schedule with a longer time range.');
+      setToast({ show: true, message: 'You cannot have multiple schedules for the same day. Please combine them into one schedule with a longer time range.', type: 'error' });
       setIsSubmitting(false);
       return;
     }
@@ -2884,9 +2888,13 @@ const App: React.FC = () => {
       specialization: newDoctorData.specialization
     });
     if (editingDoctor && !useFlatVisitCommission && (doctorCommissionLoading || doctorCommissionLoadError)) {
-      alert(doctorCommissionLoading
-        ? 'Please wait for custom commission rates to finish loading before saving.'
-        : 'Custom commission rates could not be loaded. Close and reopen this doctor before saving to prevent data loss.');
+      setToast({
+        show: true,
+        message: doctorCommissionLoading
+          ? 'Please wait for custom commission rates to finish loading before saving.'
+          : 'Custom commission rates could not be loaded. Close and reopen this doctor before saving to prevent data loss.',
+        type: 'error'
+      });
       setIsSubmitting(false);
       return;
     }
@@ -2894,14 +2902,18 @@ const App: React.FC = () => {
       ? newDoctorData.commission_per_visit
       : newDoctorData.commission_percentage);
     if (!Number.isFinite(activeCommissionValue) || activeCommissionValue < 0) {
-      alert(useFlatVisitCommission
-        ? 'Per-visit commission must be a valid non-negative amount.'
-        : 'Commission percentage must be between 0 and 100.');
+      setToast({
+        show: true,
+        message: useFlatVisitCommission
+          ? 'Per-visit commission must be a valid non-negative amount.'
+          : 'Commission percentage must be between 0 and 100.',
+        type: 'error'
+      });
       setIsSubmitting(false);
       return;
     }
     if (!useFlatVisitCommission && activeCommissionValue > 100) {
-      alert('Commission percentage must be between 0 and 100.');
+      setToast({ show: true, message: 'Commission percentage must be between 0 and 100.', type: 'error' });
       setIsSubmitting(false);
       return;
     }
@@ -2915,14 +2927,14 @@ const App: React.FC = () => {
 
     const uniqueTreatmentIds = new Set(normalizedCommissionRows.map((row) => row.treatment_id));
     if (uniqueTreatmentIds.size !== normalizedCommissionRows.length) {
-      alert('Each treatment can only have one custom commission rate.');
+      setToast({ show: true, message: 'Each treatment can only have one custom commission rate.', type: 'error' });
       setIsSubmitting(false);
       return;
     }
 
     const invalidCommissionRate = normalizedCommissionRows.find((row) => Number.isNaN(row.commission_rate) || row.commission_rate < 0 || row.commission_rate > 100);
     if (invalidCommissionRate) {
-      alert('Custom commission rates must be between 0 and 100.');
+      setToast({ show: true, message: 'Custom commission rates must be between 0 and 100.', type: 'error' });
       setIsSubmitting(false);
       return;
     }
@@ -2963,6 +2975,13 @@ const App: React.FC = () => {
         }
         throw new Error(commissionErr.message || 'Failed to save doctor commission settings.');
       }
+      setToast({
+        show: true,
+        message: editingDoctor
+          ? 'Doctor information updated successfully.'
+          : 'Doctor added successfully.',
+        type: 'success'
+      });
       setShowDoctorModal(false);
       fetchInitialData();
       setEditingDoctor(null);
@@ -2980,7 +2999,11 @@ const App: React.FC = () => {
         setDoctorTransferBlockedOpen(true);
         return;
       }
-      alert(err.message);
+      setToast({
+        show: true,
+        message: `${editingDoctor ? 'Failed to update doctor' : 'Failed to add doctor'}: ${err.message || 'An unexpected error occurred.'}`,
+        type: 'error'
+      });
     } finally {
       setIsSubmitting(false);
     }

@@ -20,6 +20,7 @@ import { buildPatientProfileUpdatePayload } from '../utils/patientProfileUpdate'
 import { chunkMonthlyReportPatientIds, type MonthlyReportSourceRecord } from '../utils/monthlyReport';
 import { chunkUniqueIds, mapWithConcurrency, REPORT_REQUEST_CONCURRENCY } from '../utils/reportBatching';
 import { normalizeMaterialCostPresetInputs, sortMaterialCostPresets } from '../utils/materialCostPresets';
+import { buildDoctorDirectWritePayload } from '../utils/doctorWritePayload';
 
 let usersAllowedTabsSupport: boolean | null = null;
 let usersDoctorIdSupport: boolean | null = null;
@@ -3893,17 +3894,14 @@ export const api = {
       // First create the doctor
       const { data: doctorData, error: doctorError } = await supabase
         .from('doctors')
-        .insert({
+        .insert(buildDoctorDirectWritePayload({
           location_id: primaryLocationId,
           name: data.name,
           email: trimmedEmail || null,
           phone: data.phone,
           specialization: String(data.specialization || '').trim() || 'General',
-          commission_type: commissionType,
-          password: trimmedPassword || null,
-          commission_percentage: commissionPercentage,
-          commission_per_visit: commissionPerVisit
-        })
+          password: trimmedPassword || null
+        }))
         .select()
         .single();
 
@@ -4036,27 +4034,16 @@ export const api = {
       }
 
       // Update doctor info
-      const doctorUpdatePayload: any = {
+      const doctorUpdatePayload = buildDoctorDirectWritePayload({
         location_id: primaryLocationId,
         name: data.name,
         email: nextEmail || null,
         phone: data.phone,
         specialization: data.specialization === undefined
           ? undefined
-          : String(data.specialization || '').trim() || 'General'
-      };
-      if (data.commission_percentage !== undefined) {
-        doctorUpdatePayload.commission_percentage = validateDoctorCommissionPercentage(data.commission_percentage);
-      }
-      if (data.commission_type !== undefined) {
-        doctorUpdatePayload.commission_type = validateDoctorCommissionType(data.commission_type);
-      }
-      if (data.commission_per_visit !== undefined) {
-        doctorUpdatePayload.commission_per_visit = validateDoctorCommissionPerVisit(data.commission_per_visit);
-      }
-      if (trimmedPassword) {
-        doctorUpdatePayload.password = trimmedPassword;
-      }
+          : String(data.specialization || '').trim() || 'General',
+        password: trimmedPassword || undefined
+      });
 
       const { error: doctorError } = await supabase
         .from('doctors')
