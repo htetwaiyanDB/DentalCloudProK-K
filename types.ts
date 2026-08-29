@@ -342,6 +342,7 @@ export interface DoctorTreatmentCommission {
   doctor_id?: string;
   treatment_id: string;
   commission_rate: number;
+  fixed_amount?: number | null;
   created_at?: string;
   updated_at?: string;
   treatment_name?: string;

@@ -586,6 +586,14 @@ const DashboardView: React.FC<DashboardViewProps> = ({
   const rangeNewPatients = rangeSummary.newPatients;
   const rangeDayCount = rangeSummary.dayCount;
   const avgDailyRevenue = rangeSummary.avgDailyRevenue;
+  const patientBalanceStatuses = useMemo(() => [...patients]
+    .map((patient) => ({
+      patient,
+      balance: Math.max(0, Number(patient.balance ?? 0)),
+      hasOutstandingBalance: Number(patient.balance ?? 0) > 0
+    }))
+    .sort((a, b) => Number(b.hasOutstandingBalance) - Number(a.hasOutstandingBalance) || b.balance - a.balance || a.patient.name.localeCompare(b.patient.name)), [patients]);
+  const patientsWithOutstandingBalances = patientBalanceStatuses.filter(({ hasOutstandingBalance }) => hasOutstandingBalance);
 
   const formatDateLabel = (dateStr: string) => new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -1238,6 +1246,49 @@ const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           )}
         </div>
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-800">Patient Balance Status</h3>
+            <p className="text-xs text-gray-500">Current balances for all patients in {selectedLocationName}</p>
+          </div>
+          <div className="flex items-center gap-2 text-xs font-bold">
+            <span className="rounded-full bg-rose-50 px-3 py-1.5 text-rose-700">{patientsWithOutstandingBalances.length} with debt</span>
+            <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{patientBalanceStatuses.length - patientsWithOutstandingBalances.length} clear</span>
+          </div>
+        </div>
+        {patientBalanceStatuses.length === 0 ? (
+          <p className="text-sm italic text-gray-400">No patients in this scope.</p>
+        ) : (
+          <div className="max-h-80 overflow-y-auto rounded-lg border border-gray-100">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white text-xs uppercase text-gray-400 border-b border-gray-100">
+                <tr>
+                  <th className="text-left py-2 px-3">Patient</th>
+                  <th className="text-left py-2 px-3">Status</th>
+                  <th className="text-right py-2 px-3">Balance</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {patientBalanceStatuses.map(({ patient, balance, hasOutstandingBalance }) => (
+                  <tr key={patient.id} className="cursor-pointer text-gray-700 hover:bg-indigo-50" onClick={() => onSelectPatient(patient)}>
+                    <td className="py-2.5 px-3 font-medium text-gray-900">{patient.name}</td>
+                    <td className="py-2.5 px-3">
+                      <span className={`rounded-full px-2 py-1 text-xs font-bold ${hasOutstandingBalance ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                        {hasOutstandingBalance ? 'Outstanding debt' : 'No debt'}
+                      </span>
+                    </td>
+                    <td className={`py-2.5 px-3 text-right font-bold ${hasOutstandingBalance ? 'text-rose-700' : 'text-emerald-700'}`}>
+                      {formatCurrency(balance, currency)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">

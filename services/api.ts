@@ -4276,6 +4276,7 @@ export const api = {
           doctor_id,
           treatment_id,
           commission_rate,
+          fixed_amount,
           created_at,
           updated_at,
           treatment_types:treatment_id (
@@ -4292,6 +4293,7 @@ export const api = {
         doctor_id: row.doctor_id,
         treatment_id: row.treatment_id,
         commission_rate: Number(row.commission_rate ?? 0),
+        fixed_amount: row.fixed_amount === null || row.fixed_amount === undefined ? null : Number(row.fixed_amount),
         created_at: row.created_at,
         updated_at: row.updated_at,
         treatment_name: row.treatment_types?.name || undefined
@@ -4309,7 +4311,8 @@ export const api = {
         .filter((entry) => entry.treatment_id)
         .map((entry) => ({
           treatment_id: entry.treatment_id,
-          commission_rate: Number(entry.commission_rate)
+          commission_rate: commissionType === 'percentage' ? Number(entry.commission_rate ?? 0) : 0,
+          fixed_amount: commissionType === 'fixed' ? Number(entry.fixed_amount ?? 0) : null
         }));
 
       const { error } = await supabase.rpc('configure_doctor_commission', {
@@ -4839,9 +4842,9 @@ export const api = {
       const payload = {
         id: APP_SETTINGS_SINGLETON_ID,
         clinical_fee_enabled: settings.enabled,
-        clinical_fee_amount: Number(settings.newPatientAmount || 0),
-        clinical_fee_new_patient_amount: Number(settings.newPatientAmount || 0),
-        clinical_fee_returning_patient_amount: Number(settings.returningPatientAmount || 0),
+        clinical_fee_amount: Number(settings.newPatientAmount ?? 0),
+        clinical_fee_new_patient_amount: Number(settings.newPatientAmount ?? 0),
+        clinical_fee_returning_patient_amount: Number(settings.returningPatientAmount ?? 0),
         updated_at: new Date().toISOString()
       };
 

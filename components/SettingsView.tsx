@@ -385,8 +385,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSaveClinicalFee = async () => {
     try {
       setClinicalFeeMessage('');
-      const normalizedNewPatientAmount = Math.max(0, Number(clinicalFeeForm.newPatientAmount || 0));
-      const normalizedReturningPatientAmount = Math.max(0, Number(clinicalFeeForm.returningPatientAmount || 0));
+      const normalizedNewPatientAmount = Math.max(0, Number(clinicalFeeForm.newPatientAmount ?? 0));
+      const normalizedReturningPatientAmount = Math.max(0, Number(clinicalFeeForm.returningPatientAmount ?? 0));
       await onSaveClinicalFeeSettings(
         clinicalFeeForm.enabled,
         normalizedNewPatientAmount,
@@ -1060,7 +1060,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <p className="text-xs text-gray-500">
-              During payment collection, staff can continue with the suggested service fee or continue without it.
+              Each fee may be set to 0 to waive it for that patient group. During payment collection, staff can continue with the suggested service fee or continue without it.
             </p>
 
             <button
