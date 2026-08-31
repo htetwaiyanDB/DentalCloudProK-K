@@ -2324,7 +2324,7 @@ const App: React.FC = () => {
 
     // Validate branch selection
     if (!newPatientData.location_id) {
-      alert('Please select a branch/location for this patient.');
+      setToast({ show: true, message: 'Please select a branch/location for this patient.', type: 'error' });
       return;
     }
 
@@ -2389,7 +2389,7 @@ const App: React.FC = () => {
       const message = isDuplicatePatientValidationError(err)
         ? err.message
         : err.message;
-      alert(`Error creating patient: ${message}`);
+      setToast({ show: true, message: `Failed to register patient: ${message}`, type: 'error' });
     } finally {
       setIsSubmitting(false);
     }
@@ -4389,12 +4389,12 @@ const App: React.FC = () => {
                   try {
                     await api.patients.update(id, data);
                     fetchInitialData(currentLocationId || undefined);
-                    alert('Patient profile updated successfully!');
+                    setToast({ show: true, message: 'Patient profile updated successfully.', type: 'success' });
                   } catch (err: any) {
                     if (err?.message?.includes('Cannot transfer branch: Patient has existing records')) {
                       throw err;
                     }
-                    alert('Error: ' + err.message);
+                    setToast({ show: true, message: err?.message || 'Failed to update patient profile.', type: 'error' });
                     throw err;
                   }
                 }}
@@ -4403,12 +4403,13 @@ const App: React.FC = () => {
                 onUpdatePatientAuth={async (patient, password) => {
                   try {
                     await api.patients.updateAccount(patient.id, patient.email || null, password, patient.phone || null);
-                    alert('Patient portal account updated successfully!');
+                    setToast({ show: true, message: 'Patient portal account updated successfully.', type: 'success' });
                     fetchInitialData(); // Refresh to update has_account status
                   } catch (err: any) {
-                    alert('Error: ' + err.message);
+                    setToast({ show: true, message: err?.message || 'Failed to update patient portal account.', type: 'error' });
                   }
                 }}
+                onNotify={(message, type) => setToast({ show: true, message, type })}
                 patientToEdit={patientToEditFromAppointment}
                 onPatientEditHandled={() => setPatientToEditFromAppointment(null)}
             />}

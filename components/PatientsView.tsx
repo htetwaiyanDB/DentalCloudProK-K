@@ -34,6 +34,7 @@ interface PatientsViewProps {
   onDeletePatient?: (id: string) => Promise<void>;
   onRedeemPoints?: (patient: Patient, points: number, amount: number) => void;
   onUpdatePatientAuth?: (patient: Patient, password: string) => void;
+  onNotify?: (message: string, type: 'success' | 'error' | 'info') => void;
   onExportPDF?: () => Promise<void>;
   onExportExcel?: () => Promise<void>;
   onRefresh?: () => void | Promise<void>;
@@ -59,6 +60,7 @@ const PatientsView: React.FC<PatientsViewProps> = ({
   onDeletePatient,
   onRedeemPoints, 
   onUpdatePatientAuth,
+  onNotify,
   onExportPDF,
   onExportExcel,
   onRefresh,
@@ -70,6 +72,13 @@ const PatientsView: React.FC<PatientsViewProps> = ({
   treatmentTypes = [],
   treatmentRecords = []
 }) => {
+  const notify = (message: string, type: 'success' | 'error' | 'info') => {
+    if (onNotify) {
+      onNotify(message, type);
+      return;
+    }
+    alert(message);
+  };
   const [currentPage, setCurrentPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -566,7 +575,7 @@ const PatientsView: React.FC<PatientsViewProps> = ({
     const points = parseInt(redeemPointsInput, 10);
 
     if (isNaN(points) || points <= 0 || points > availablePoints) {
-      alert(`Please enter a valid amount between 1 and ${availablePoints}.`);
+      notify(`Please enter a valid amount between 1 and ${availablePoints}.`, 'error');
       return;
     }
 
@@ -1263,7 +1272,7 @@ const PatientsView: React.FC<PatientsViewProps> = ({
             e.preventDefault();
             if (isSubmitting) return;
             if (!editData.location_id) {
-              alert('Please select a branch/location for this patient.');
+              notify('Please select a branch/location for this patient.', 'error');
               return;
             }
             setIsSubmitting(true);
@@ -1473,9 +1482,9 @@ const PatientsView: React.FC<PatientsViewProps> = ({
         try {
           await onDeletePatient(patientId);
           setDeleteConfirmOpen(false);
-          alert('Patient deleted successfully.');
+          notify('Patient deleted successfully.', 'success');
         } catch (err: any) {
-          alert(err?.message || 'Failed to delete patient');
+          notify(err?.message || 'Failed to delete patient', 'error');
         } finally {
           setIsDeleting(false);
           deletePatientIdRef.current = null;
