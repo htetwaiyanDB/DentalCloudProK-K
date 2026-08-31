@@ -3101,6 +3101,11 @@ const App: React.FC = () => {
       await api.appointments.delete(id);
       fetchInitialData();
       setAppointmentPageRefreshKey((key) => key + 1);
+      setToast({
+        message: 'Appointment deleted successfully.',
+        type: 'success',
+        show: true
+      });
     } catch (err: any) {
       alert(err.message);
     }
