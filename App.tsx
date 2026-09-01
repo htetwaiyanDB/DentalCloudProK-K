@@ -2152,7 +2152,9 @@ const App: React.FC = () => {
     setPatientMedicineHistoryError(null);
 
     const locationId = patient.location_id || currentLocationId;
-    void api.treatments.getHistory(patient.id)
+    // Clinical Focus does not render commission-ledger breakdowns. Skipping that
+    // optional enrichment removes an extra database request from chart startup.
+    void api.treatments.getHistory(patient.id, { includeCommissionEntries: false })
       .then((history) => {
         if (requestId !== treatmentHistoryRequestRef.current) return;
         setTreatmentHistory(history);

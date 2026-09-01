@@ -3319,7 +3319,10 @@ export const api = {
     },
 
     // Execution
-    getHistory: async (patientId: string): Promise<ClinicalRecord[]> => {
+    getHistory: async (
+      patientId: string,
+      options?: { includeCommissionEntries?: boolean }
+    ): Promise<ClinicalRecord[]> => {
       let { data, error } = await supabase
         .from('treatments')
         .select('*, doctors(name, specialization, commission_type, commission_percentage, commission_per_visit)')
@@ -3347,7 +3350,9 @@ export const api = {
       }
 
       if (error) throw new Error(error.message);
-      const entriesByTreatment = await getDoctorEarningEntriesByTreatmentIds((data || []).map((rec: any) => rec.id));
+      const entriesByTreatment = options?.includeCommissionEntries === false
+        ? new Map<string, any[]>()
+        : await getDoctorEarningEntriesByTreatmentIds((data || []).map((rec: any) => rec.id));
       return (data || []).map((rec: any) => ({
         ...rec,
         standardCost: rec.standard_cost ?? null,
@@ -6348,10 +6353,19 @@ export const api = {
           return query;
         };
 
-        let { data, error } = await fetchAllRows<any>(buildSalesQuery('*, patients(name), medicines(name, unit)'));
+        // A patient chart already has the patient identity. Avoid joining patients and
+        // transferring write-only sale fields that Clinical Focus never consumes.
+        const patientHistoryColumns = 'id, location_id, patient_id, medicine_id, quantity, unit_price, total_price, standard_total, discount_amount, pricing_note, date, treatment_id, created_at, medicines(name, unit)';
+        const columns = patientId
+          ? patientHistoryColumns
+          : '*, patients(name), medicines(name, unit)';
+        let { data, error } = await fetchAllRows<any>(buildSalesQuery(columns));
 
         if (error && isOptionalRelationAccessError(error, ['patients', 'medicines'])) {
-          const fallback = await fetchAllRows<any>(buildSalesQuery('*'));
+          const fallbackColumns = patientId
+            ? 'id, location_id, patient_id, medicine_id, quantity, unit_price, total_price, standard_total, discount_amount, pricing_note, date, treatment_id, created_at'
+            : '*';
+          const fallback = await fetchAllRows<any>(buildSalesQuery(fallbackColumns));
           data = fallback.data;
           error = fallback.error;
         }
