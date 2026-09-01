@@ -34,10 +34,13 @@ interface ClinicalViewProps {
   selectedTeeth: number[];
   treatmentTypes: TreatmentType[];
   treatmentHistory: ClinicalRecord[];
+  treatmentHistoryLoading?: boolean;
   medicineSales: MedicineSale[];
   medicineHistoryLoading?: boolean;
   medicineHistoryError?: string | null;
   paymentRecords: PaymentRecord[];
+  paymentHistoryLoading?: boolean;
+  paymentHistoryError?: string | null;
   paymentsAvailable?: boolean;
   patientFiles: PatientFile[];
   uploadingFiles: boolean;
@@ -84,10 +87,13 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
   selectedTeeth,
   treatmentTypes,
   treatmentHistory,
+  treatmentHistoryLoading = false,
   medicineSales,
   medicineHistoryLoading = false,
   medicineHistoryError = null,
   paymentRecords,
+  paymentHistoryLoading = false,
+  paymentHistoryError = null,
   paymentsAvailable = true,
   patientFiles,
   uploadingFiles,
@@ -847,7 +853,7 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
               </div>
             </div>
             <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-violet-700 ring-1 ring-violet-200">
-              {treatmentHistory.length} {treatmentHistory.length === 1 ? 'record' : 'records'}
+              {treatmentHistoryLoading ? 'Loading…' : `${treatmentHistory.length} ${treatmentHistory.length === 1 ? 'record' : 'records'}`}
             </span>
           </div>
           <div className="max-h-[34rem] min-h-[18rem] overflow-auto custom-scrollbar">
@@ -863,7 +869,18 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-violet-50">
-                {treatmentHistory.length === 0 ? (
+                {treatmentHistoryLoading ? (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-12 text-center" role="status" aria-live="polite">
+                      <Loader2 className="mx-auto mb-3 animate-spin text-violet-500" size={30} aria-hidden="true" />
+                      <p className="font-semibold text-gray-600">Loading clinical case history…</p>
+                      <div className="mx-auto mt-4 h-1.5 w-48 max-w-full overflow-hidden rounded-full bg-violet-100" aria-hidden="true">
+                        <div className="h-full w-2/3 animate-pulse rounded-full bg-violet-500" />
+                      </div>
+                      <p className="mt-2 text-xs text-gray-400">Please wait while patient records are retrieved.</p>
+                    </td>
+                  </tr>
+                ) : treatmentHistory.length === 0 ? (
                   <tr><td colSpan={7} className="px-5 py-12 text-center text-gray-400 italic">No clinical history recorded for this patient.</td></tr>
                 ) : (
                   treatmentHistory.map((rec) => (
@@ -910,7 +927,7 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
               </div>
             </div>
             <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200">
-              {medicineHistory.length} {medicineHistory.length === 1 ? 'record' : 'records'}
+              {medicineHistoryLoading ? 'Loading…' : `${medicineHistory.length} ${medicineHistory.length === 1 ? 'record' : 'records'}`}
             </span>
           </div>
 
@@ -929,9 +946,13 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
               <tbody className="divide-y divide-gray-50">
                 {medicineHistoryLoading ? (
                   <tr>
-                    <td colSpan={onUndoMedicineSale ? 6 : 5} className="px-5 py-12 text-center md:px-7">
+                    <td colSpan={onUndoMedicineSale ? 6 : 5} className="px-5 py-12 text-center md:px-7" role="status" aria-live="polite">
                       <Loader2 className="mx-auto mb-3 animate-spin text-emerald-500" size={30} aria-hidden="true" />
-                      <p className="font-semibold text-gray-500">Loading medicine history…</p>
+                      <p className="font-semibold text-gray-600">Loading medicine history…</p>
+                      <div className="mx-auto mt-4 h-1.5 w-48 max-w-full overflow-hidden rounded-full bg-emerald-100" aria-hidden="true">
+                        <div className="h-full w-2/3 animate-pulse rounded-full bg-emerald-500" />
+                      </div>
+                      <p className="mt-2 text-xs text-gray-400">Please wait while medicine records are retrieved.</p>
                     </td>
                   </tr>
                 ) : medicineHistoryError ? (
@@ -1003,7 +1024,7 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
               </div>
             </div>
             <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-violet-700 ring-1 ring-violet-200">
-              {paymentHistory.length} {paymentHistory.length === 1 ? 'payment' : 'payments'}
+              {paymentHistoryLoading ? 'Loading…' : `${paymentHistory.length} ${paymentHistory.length === 1 ? 'payment' : 'payments'}`}
             </span>
           </div>
 
@@ -1021,7 +1042,26 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-violet-50">
-                {paymentHistory.length === 0 ? (
+                {paymentHistoryLoading ? (
+                  <tr>
+                    <td colSpan={7} className="px-5 py-12 text-center md:px-7" role="status" aria-live="polite">
+                      <Loader2 className="mx-auto mb-3 animate-spin text-violet-500" size={30} aria-hidden="true" />
+                      <p className="font-semibold text-gray-600">Loading payment history…</p>
+                      <div className="mx-auto mt-4 h-1.5 w-48 max-w-full overflow-hidden rounded-full bg-violet-100" aria-hidden="true">
+                        <div className="h-full w-2/3 animate-pulse rounded-full bg-violet-500" />
+                      </div>
+                      <p className="mt-2 text-xs text-gray-400">Please wait while payment records are retrieved.</p>
+                    </td>
+                  </tr>
+                ) : paymentHistoryError ? (
+                  <tr>
+                    <td colSpan={7} className="px-5 py-12 text-center md:px-7">
+                      <AlertCircle className="mx-auto mb-3 text-red-400" size={32} aria-hidden="true" />
+                      <p className="font-semibold text-red-700">Payment history could not be loaded.</p>
+                      <p className="mt-1 text-sm text-gray-500">{paymentHistoryError}</p>
+                    </td>
+                  </tr>
+                ) : paymentHistory.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-5 py-12 text-center md:px-7">
                       <WalletCards className="mx-auto mb-3 text-violet-200" size={34} aria-hidden="true" />

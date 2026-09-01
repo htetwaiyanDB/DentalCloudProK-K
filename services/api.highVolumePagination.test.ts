@@ -144,4 +144,13 @@ describe('high-volume Supabase fetches', () => {
     ]));
     expect(supabaseMock.from).not.toHaveBeenCalledWith('doctor_commission_entries');
   });
+
+  it('filters Clinical Focus payment history by patient at the database', async () => {
+    await api.finance.getPayments('location-1', { patientId: 'patient-1' });
+
+    expect(supabaseMock.filtersByTable.payments).toEqual(expect.arrayContaining([
+      ['eq', 'location_id', 'location-1'],
+      ['eq', 'patient_id', 'patient-1']
+    ]));
+  });
 });

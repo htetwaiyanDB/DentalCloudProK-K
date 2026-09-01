@@ -4403,6 +4403,7 @@ export const api = {
     getPayments: async (locationId?: string, options?: {
       dateFrom?: string;
       dateTo?: string;
+      patientId?: string;
     }): Promise<PaymentRecord[]> => {
       const buildPaymentQuery = (columns: string) => (from: number, to: number) => {
         let query = supabase
@@ -4414,6 +4415,7 @@ export const api = {
         if (locationId) query = query.eq('location_id', locationId);
         if (options?.dateFrom) query = query.gte('payment_date', options.dateFrom);
         if (options?.dateTo) query = query.lte('payment_date', options.dateTo);
+        if (options?.patientId) query = query.eq('patient_id', options.patientId);
         return query;
       };
 
