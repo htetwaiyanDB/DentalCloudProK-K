@@ -4,6 +4,8 @@ import { filterAuditRowsByDateRange } from './auditLogFilters';
 import { formatTeethArray, formatTeethWithPosition } from './toothNumbering';
 import { formatPaymentAllocations, formatPaymentMethod } from './paymentMethods';
 import { formatDoctorName } from './doctorName';
+import { allocateCommissionablePayments, calculateCommissionLedgerEntries } from './doctorCommissionLedger';
+import { getPaymentTreatmentIds, getPaymentTreatmentShare } from './paymentTreatmentAllocation';
 
 export type AuditFilter = 'all' | 'appointments' | 'reschedules' | 'treatments' | 'payments';
 
@@ -206,12 +208,57 @@ export const buildAuditLogRows = (
   const doctorEarningsByPayment = new Map<string, number>();
   records.forEach((record) => {
     (record.doctorEarningEntries || []).forEach((entry) => {
-      if (!entry.paymentId) return;
+      // Legacy totals belong only to the treatment and cannot identify the
+      // payment that earned them. Actual ledger rows remain the source of truth.
+      if (!entry.paymentId || entry.paymentId.startsWith('legacy-')) return;
       doctorEarningsByPayment.set(
         entry.paymentId,
         (doctorEarningsByPayment.get(entry.paymentId) || 0) + getPositiveNumber(entry.earnings)
       );
     });
+  });
+  const fallbackCommissionEntries = calculateCommissionLedgerEntries(
+    records.map((record) => ({
+      id: record.id,
+      patientId: record.patient_id,
+      doctorId: record.doctor_id,
+      treatmentTypeId: record.treatment_type_id,
+      date: record.date,
+      cost: getPositiveNumber(record.cost),
+      commissionType: record.doctor_commission_type,
+      specialization: record.doctor_specialization,
+      commissionPercentage: record.doctor_commission_percentage,
+      commissionPerVisit: record.doctor_commission_per_visit
+    })),
+    allocateCommissionablePayments(
+      records.map((record) => ({
+        id: record.id,
+        patientId: record.patient_id,
+        doctorId: record.doctor_id,
+        treatmentTypeId: record.treatment_type_id,
+        date: record.date,
+        cost: getPositiveNumber(record.cost),
+        commissionType: record.doctor_commission_type,
+        specialization: record.doctor_specialization,
+        commissionPercentage: record.doctor_commission_percentage,
+        commissionPerVisit: record.doctor_commission_per_visit
+      })),
+      payments.map((payment) => ({
+        id: payment.id,
+        patientId: payment.patientId,
+        date: payment.date,
+        createdAt: payment.createdAt,
+        commissionableAmount: getPaymentTreatmentShare(payment),
+        treatmentIds: getPaymentTreatmentIds(payment)
+      }))
+    )
+  );
+  const fallbackDoctorEarningsByPayment = new Map<string, number>();
+  fallbackCommissionEntries.forEach((entry) => {
+    fallbackDoctorEarningsByPayment.set(
+      entry.paymentId,
+      (fallbackDoctorEarningsByPayment.get(entry.paymentId) || 0) + getPositiveNumber(entry.earnings)
+    );
   });
   const paymentRows: AuditExportRow[] = includeAppointments
     ? payments.map((payment) => ({
@@ -223,7 +270,9 @@ export const buildAuditLogRows = (
             (sum, treatmentId) => sum + getTreatmentDiscount(treatmentById.get(treatmentId)),
             0
           ),
-          doctorEarned: doctorEarningsByPayment.get(payment.id) || 0
+          doctorEarned: doctorEarningsByPayment.has(payment.id)
+            ? doctorEarningsByPayment.get(payment.id) || 0
+            : fallbackDoctorEarningsByPayment.get(payment.id) || 0
         }
       }))
     : [];

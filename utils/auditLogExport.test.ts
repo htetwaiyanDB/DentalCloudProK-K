@@ -255,6 +255,27 @@ describe('audit log export rows', () => {
     }
   });
 
+  it('calculates payment commission when an older payment has no ledger entry yet', () => {
+    const legacyRecords: ClinicalRecord[] = [{
+      ...records[0],
+      doctor_id: 'doc-1',
+      cost: 500000,
+      doctorEarnings: 50000,
+      doctorEarningEntries: [],
+      doctor_commission_type: 'percentage',
+      doctor_commission_percentage: 10
+    }];
+    const partialPayments: PaymentRecord[] = [
+      { ...payments[0], id: 'partial-1', amount: 100000, treatmentIds: ['tr-1'], date: '2026-05-30', receiptSnapshot: null },
+      { ...payments[0], id: 'partial-2', amount: 200000, treatmentIds: ['tr-1'], date: '2026-05-31', receiptSnapshot: null }
+    ];
+
+    const paymentRows = buildAuditLogRows(legacyRecords, [], true, partialPayments)
+      .filter((row) => row.kind === 'payment');
+
+    expect(paymentRows.map((row) => row.kind === 'payment' ? row.payment.doctorEarned : 0).sort((a, b) => a - b)).toEqual([10000, 20000]);
+  });
+
   it('derives legacy receipt discounts and does not double-count duplicate treatment links', () => {
     const legacyPayment: PaymentRecord = {
       ...payments[0],
