@@ -1657,10 +1657,13 @@ const App: React.FC = () => {
 
     const session = auth.getSession();
     const doctorId = session?.role === 'doctor' ? session.doctor_id || undefined : undefined;
-    const includeTreatments = query.auditFilter === 'all' || query.auditFilter === 'treatments';
     const includeAppointments = query.auditFilter === 'all' || query.auditFilter === 'appointments';
     const includePayments = !doctorId && (query.auditFilter === 'all' || query.auditFilter === 'payments');
     const includeReschedules = !doctorId && (query.auditFilter === 'all' || query.auditFilter === 'reschedules');
+    // Payment commission is calculated from treatment ownership/rates and its
+    // immutable ledger entries, so load the related treatment rows even when
+    // the Payments tab is the only visible audit filter.
+    const includeTreatments = query.auditFilter === 'all' || query.auditFilter === 'treatments' || includePayments;
 
     setAuditLoading(true);
     setAuditLoadError(null);
@@ -1672,7 +1675,7 @@ const App: React.FC = () => {
               dateFrom: query.dateFrom,
               dateTo: query.dateTo,
               doctorId,
-              includeCommissionEntries: false,
+              includeCommissionEntries: includePayments,
               throwOnError: true
             })
           : Promise.resolve([]),
