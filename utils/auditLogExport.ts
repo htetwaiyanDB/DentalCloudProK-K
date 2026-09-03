@@ -203,6 +203,16 @@ export const buildAuditLogRows = (
     : [];
 
   const treatmentById = new Map(records.map((record) => [record.id, record]));
+  const doctorEarningsByPayment = new Map<string, number>();
+  records.forEach((record) => {
+    (record.doctorEarningEntries || []).forEach((entry) => {
+      if (!entry.paymentId) return;
+      doctorEarningsByPayment.set(
+        entry.paymentId,
+        (doctorEarningsByPayment.get(entry.paymentId) || 0) + getPositiveNumber(entry.earnings)
+      );
+    });
+  });
   const paymentRows: AuditExportRow[] = includeAppointments
     ? payments.map((payment) => ({
         kind: 'payment',
@@ -212,7 +222,8 @@ export const buildAuditLogRows = (
           _treatmentDiscountAmount: [...new Set(payment.treatmentIds || [])].reduce(
             (sum, treatmentId) => sum + getTreatmentDiscount(treatmentById.get(treatmentId)),
             0
-          )
+          ),
+          doctorEarned: doctorEarningsByPayment.get(payment.id) || 0
         }
       }))
     : [];
@@ -358,7 +369,7 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
         amount: payment.amount,
         discount: getAuditPaymentDiscount(payment) || null,
         serviceCharges: null,
-        doctorEarned: null,
+        doctorEarned: getPositiveNumber(payment.doctorEarned) || null,
         paymentMethod: payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)
       };
     }

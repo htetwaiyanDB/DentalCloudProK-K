@@ -191,6 +191,8 @@ export interface PaymentRecord {
   createdByUserId?: string | null;
   createdByUserName?: string | null;
   corrections?: PaymentCorrection[];
+  // Audit-only value calculated from the immutable commission ledger for this payment.
+  doctorEarned?: number;
 }
 
 export interface PaymentCorrection {

@@ -18,6 +18,7 @@ describe('audit log export rows', () => {
       standardCost: 25000,
       discountAmount: 5000,
       doctorEarnings: 8000,
+      doctorEarningEntries: [{ paymentId: 'pay-1', treatmentId: 'tr-1', doctorId: 'doc-1', paymentDate: '2026-05-30', treatmentDate: '2026-05-30', calculationMode: 'percentage', allocatedPayment: 6000, commissionRate: 10, earnings: 600 }],
       date: '2026-05-30'
     },
     {
@@ -32,6 +33,7 @@ describe('audit log export rows', () => {
       description: 'Scaling',
       cost: 10000,
       doctorEarnings: 4000,
+      doctorEarningEntries: [{ paymentId: 'pay-1', treatmentId: 'tr-2', doctorId: 'doc-1', paymentDate: '2026-05-30', treatmentDate: '2026-05-30', calculationMode: 'percentage', allocatedPayment: 4000, commissionRate: 10, earnings: 400 }],
       date: '2026-05-30'
     },
     {
@@ -247,7 +249,9 @@ describe('audit log export rows', () => {
     expect(paymentRow?.kind).toBe('payment');
     if (paymentRow?.kind === 'payment') {
       expect(paymentRow.payment._treatmentDiscountAmount).toBe(5000);
+      expect(paymentRow.payment.doctorEarned).toBe(1000);
       expect(buildAuditLogExportTableRows([paymentRow], 'MMK')[0].discount).toBe(5000);
+      expect(buildAuditLogExportTableRows([paymentRow], 'MMK')[0].doctorEarned).toBe(1000);
     }
   });
 
