@@ -3,6 +3,7 @@ import { Gift, Minus, Package, Plus, RotateCcw, Search, X } from 'lucide-react';
 import { Medicine } from '../types';
 import { Modal } from './Shared';
 import { formatCurrency, Currency } from '../utils/currency';
+import { distributeOverallDiscount } from '../utils/treatmentDiscount';
 import {
   filterMedicinesForSelection,
   getAvailableMedicines,
@@ -31,6 +32,7 @@ const formatQuantity = (value: number | undefined) => {
 const MedicineSelectionModal: React.FC<MedicineSelectionModalProps> = ({ medicines, currency, onConfirm, onClose }) => {
   const [quantities, setQuantities] = useState<Map<string, number>>(new Map());
   const [finalTotals, setFinalTotals] = useState<Map<string, string>>(new Map());
+  const [overallDiscountInput, setOverallDiscountInput] = useState('0');
   const [searchTerm, setSearchTerm] = useState('');
   const [itemType, setItemType] = useState('');
   const [category, setCategory] = useState('');
@@ -90,8 +92,14 @@ const MedicineSelectionModal: React.FC<MedicineSelectionModalProps> = ({ medicin
     return medicine ? [{ medicine, quantity, finalTotal: getFinalTotal(medicine, quantity) }] : [];
   });
   const originalTotal = selected.reduce((sum, item) => sum + standardTotal(item.medicine, item.quantity), 0);
-  const finalTotal = selected.reduce((sum, item) => sum + item.finalTotal, 0);
-  const discountTotal = Math.max(0, roundMoney(originalTotal - finalTotal));
+  const subtotal = roundMoney(selected.reduce((sum, item) => sum + item.finalTotal, 0));
+  const parsedDiscount = Number.parseFloat(overallDiscountInput);
+  const overallDiscount = Number.isFinite(parsedDiscount) ? Math.min(subtotal, Math.max(0, roundMoney(parsedDiscount))) : 0;
+  const discountedSelection = distributeOverallDiscount(
+    selected.map((item) => ({ ...item, cost: item.finalTotal })), overallDiscount
+  ).map(({ cost, ...item }) => ({ ...item, finalTotal: cost }));
+  const finalTotal = roundMoney(subtotal - overallDiscount);
+  const discountTotal = Math.max(0, roundMoney(originalTotal - subtotal));
 
   return (
     <Modal title="Select Inventory Items" onClose={onClose}>
@@ -208,12 +216,24 @@ const MedicineSelectionModal: React.FC<MedicineSelectionModalProps> = ({ medicin
               );
             })}
           </div>
+          {selected.length > 0 && <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+            <p className="text-sm font-black text-amber-950">Overall Discount</p>
+            <p className="mt-1 text-xs font-semibold text-amber-800">Applied after the individual item charges.</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+              <label className="text-xs font-bold text-amber-950">Overall Discount ({currency})
+                <input type="number" inputMode="decimal" min="0" max={subtotal} step="0.01" value={overallDiscountInput} onChange={(event) => setOverallDiscountInput(event.target.value)} onBlur={() => setOverallDiscountInput(String(overallDiscount))} className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm font-bold focus:border-transparent focus:ring-2 focus:ring-indigo-500" />
+              </label>
+              <button type="button" onClick={() => setOverallDiscountInput('0')} className="min-h-11 rounded-xl border border-amber-200 bg-white px-4 py-2 text-xs font-black text-amber-800 hover:bg-amber-100">Clear Discount</button>
+            </div>
+            <div className="mt-3 flex justify-between gap-3 border-t border-amber-200 pt-3 text-sm text-amber-950"><span>Charge before overall discount</span><span className="font-bold">{formatCurrency(subtotal, currency)}</span></div>
+          </div>}
           {selected.length > 0 && <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
             <div className="flex justify-between text-sm text-gray-600"><span>Original items total</span><span>{formatCurrency(originalTotal, currency)}</span></div>
             {discountTotal > 0 && <div className="mt-1 flex justify-between text-sm font-bold text-emerald-700"><span>Item discount</span><span>-{formatCurrency(discountTotal, currency)}</span></div>}
+            {overallDiscount > 0 && <div className="mt-1 flex justify-between text-sm font-bold text-emerald-700"><span>Overall discount</span><span>-{formatCurrency(overallDiscount, currency)}</span></div>}
             <div className="mt-2 flex justify-between border-t border-indigo-200 pt-2"><span className="font-bold text-gray-800">Amount added to bill</span><span className="text-lg font-black text-indigo-700">{formatCurrency(finalTotal, currency)}</span></div>
           </div>}
-          <div className="flex gap-3"><button type="button" onClick={onClose} className="flex-1 rounded-xl border border-gray-300 py-3 font-bold text-gray-700 hover:bg-gray-50">Cancel</button><button type="button" onClick={() => onConfirm(selected)} disabled={selected.length === 0} className="flex-1 rounded-xl bg-indigo-600 py-3 font-bold text-white shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">Add to Patient Bill</button></div>
+          <div className="flex gap-3"><button type="button" onClick={onClose} className="flex-1 rounded-xl border border-gray-300 py-3 font-bold text-gray-700 hover:bg-gray-50">Cancel</button><button type="button" onClick={() => onConfirm(discountedSelection)} disabled={selected.length === 0} className="flex-1 rounded-xl bg-indigo-600 py-3 font-bold text-white shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">Add to Patient Bill</button></div>
         </>}
       </div>
     </Modal>

@@ -7,10 +7,10 @@ const normalizeMoney = (value: unknown): number => {
   return Number.isFinite(numericValue) ? Math.max(0, roundMoney(numericValue)) : 0;
 };
 
-export const distributeOverallTreatmentDiscount = (
-  lines: TreatmentChargeLine[],
+export const distributeOverallDiscount = <T extends { cost: number }>(
+  lines: T[],
   requestedDiscount: number
-): TreatmentChargeLine[] => {
+): T[] => {
   const normalizedLines = lines.map((line) => ({ ...line, cost: normalizeMoney(line.cost) }));
   const subtotal = roundMoney(normalizedLines.reduce((sum, line) => sum + line.cost, 0));
   const discount = Math.min(subtotal, normalizeMoney(requestedDiscount));
@@ -33,3 +33,8 @@ export const distributeOverallTreatmentDiscount = (
     return { ...line, cost: roundMoney(line.cost - lineDiscount) };
   });
 };
+
+export const distributeOverallTreatmentDiscount = (
+  lines: TreatmentChargeLine[],
+  requestedDiscount: number
+): TreatmentChargeLine[] => distributeOverallDiscount(lines, requestedDiscount);

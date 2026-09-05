@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { distributeOverallTreatmentDiscount } from './treatmentDiscount';
+import { distributeOverallDiscount, distributeOverallTreatmentDiscount } from './treatmentDiscount';
+
+it('allocates inventory discounts while preserving quantities and free items', () => {
+  const result = distributeOverallDiscount([
+    { medicineId: 'a', quantity: 2, cost: 100 },
+    { medicineId: 'b', quantity: 1, cost: 200 },
+    { medicineId: 'free', quantity: 3, cost: 0 }
+  ], 100);
+  expect(result).toEqual([
+    { medicineId: 'a', quantity: 2, cost: 66.67 },
+    { medicineId: 'b', quantity: 1, cost: 133.33 },
+    { medicineId: 'free', quantity: 3, cost: 0 }
+  ]);
+});
 
 describe('distributeOverallTreatmentDiscount', () => {
   const lines = [
