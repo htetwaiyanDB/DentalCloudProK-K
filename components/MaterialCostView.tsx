@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeftRight, Beaker, Loader2, Package, Plus, RotateCw, Search } from 'lucide-react';
+import { ArrowLeftRight, Beaker, History, Loader2, Package, Plus, RotateCw, Search } from 'lucide-react';
 import type { ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
 import { api } from '../services/api';
 import { formatCurrency, type Currency } from '../utils/currency';
@@ -13,8 +13,10 @@ import {
   calculateMaterialAdjustedDoctorEarnings,
   calculateMaterialNetProfit
 } from '../utils/materialCostCalculations';
+import { buildMaterialPaymentHistoryRows, filterMaterialPaymentHistoryRows } from '../utils/materialPaymentHistory';
 import Pagination from './Pagination';
 import MaterialCostModal from './MaterialCostModal';
+import MaterialPaymentHistory from './MaterialPaymentHistory';
 
 interface MaterialCostViewProps {
   records: ClinicalRecord[];
@@ -27,6 +29,7 @@ interface MaterialCostViewProps {
 
 type TreatmentAuditRow = Extract<AuditExportRow, { kind: 'treatment' }>;
 type MaterialCostFilter = 'all' | 'tomorrow' | 'today' | 'custom';
+type MaterialCostTab = 'operation' | 'payments';
 
 const getTreatmentRecordIds = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
   const groupedRecords = record._groupedRecords?.length ? record._groupedRecords : [record];
@@ -38,6 +41,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
+  const [activeTab, setActiveTab] = useState<MaterialCostTab>('operation');
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
   const [doctorSearchTerm, setDoctorSearchTerm] = useState('');
   const [treatmentSearchTerm, setTreatmentSearchTerm] = useState('');
@@ -97,6 +101,14 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
 
     return sortMaterialCostRowsNewestFirst(matchingRows);
   }, [baseFilteredRows, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm]);
+
+  const paymentHistoryRows = useMemo(
+    () => filterMaterialPaymentHistoryRows(
+      buildMaterialPaymentHistoryRows(records, paymentRecords),
+      { dateFrom, dateTo, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm }
+    ),
+    [records, paymentRecords, dateFrom, dateTo, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm]
+  );
 
   const loadMaterialSummaries = React.useCallback(async (rowsToLoad: TreatmentAuditRow[]) => {
     const requestVersion = ++summaryRequestVersion.current;
@@ -330,10 +342,10 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 <div className="flex max-w-full gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
                   <span className="shrink-0 rounded-full border border-slate-200 bg-white px-3 py-1 font-semibold text-slate-700">
-                    {statusFilteredRows.length} visible
+                    {activeTab === 'operation' ? statusFilteredRows.length : paymentHistoryRows.length} visible
                   </span>
                   <span className="shrink-0 rounded-full border theme-accent-border theme-accent-soft-bg px-3 py-1 font-semibold theme-accent-text">
-                    {statusFilteredRows.length} treatments
+                    {activeTab === 'operation' ? `${statusFilteredRows.length} treatments` : `${paymentHistoryRows.length} payments`}
                   </span>
                 </div>
                 <button
@@ -448,11 +460,34 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
         </div>
       </div>
 
+      <div className="flex items-end gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 pt-2 sm:px-5">
+        <button
+          type="button"
+          onClick={() => setActiveTab('operation')}
+          className={`flex min-h-14 flex-none items-center justify-start gap-2 border-b-2 px-3 text-left transition-colors sm:gap-3 sm:px-4 ${activeTab === 'operation' ? 'border-[var(--hover-500)] text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+        >
+          <Package size={18} className={activeTab === 'operation' ? 'text-[var(--hover-600)]' : ''} />
+          <span><span className="block text-sm font-black">Operation</span><span className="hidden text-[10px] text-slate-500 sm:block">Costs and overall earnings</span></span>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold">{statusFilteredRows.length}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('payments')}
+          className={`flex min-h-14 flex-none items-center justify-start gap-2 border-b-2 px-3 text-left transition-colors sm:gap-3 sm:px-4 ${activeTab === 'payments' ? 'border-emerald-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+        >
+          <History size={18} className={activeTab === 'payments' ? 'text-emerald-600' : ''} />
+          <span><span className="block text-sm font-black">Payment History</span><span className="hidden text-[10px] text-slate-500 sm:block">Each collection and commission</span></span>
+          <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">{paymentHistoryRows.length}</span>
+        </button>
+      </div>
+
       {loading ? (
         <div className="flex flex-col items-center justify-center gap-3 p-12 text-slate-500">
           <Loader2 className="animate-spin text-[var(--hover-600)]" />
-          <p className="text-sm font-medium">Loading material and lab cost rows...</p>
+          <p className="text-sm font-medium">Loading material, lab, and payment rows...</p>
         </div>
+      ) : activeTab === 'payments' ? (
+        <MaterialPaymentHistory rows={paymentHistoryRows} currency={currency} />
       ) : (
         <>
         <div className="hidden xl:block">
@@ -652,7 +687,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
         </>
       )}
 
-      {!loading && statusFilteredRows.length > 0 && (
+      {!loading && activeTab === 'operation' && statusFilteredRows.length > 0 && (
         <Pagination
           totalItems={statusFilteredRows.length}
           itemsPerPage={itemsPerPage}
