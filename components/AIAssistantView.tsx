@@ -793,7 +793,7 @@ const AIAssistantView: React.FC<AIAssistantViewProps> = ({
   const activeExpenses = useMemo(() => filterByLocation(expenses), [expenses, analysisLocationId]);
   const activeMedicineSales = useMemo(() => filterByLocation(medicineSales), [medicineSales, analysisLocationId]);
   const activePaymentRecords = useMemo(
-    () => analysisLocationId ? paymentRecords.filter(record => record.location_id === analysisLocationId) : paymentRecords,
+    () => paymentRecords.filter(record => !record.voidedAt && (!analysisLocationId || record.location_id === analysisLocationId)),
     [paymentRecords, analysisLocationId]
   );
   const activeTreatmentRecords = useMemo(() => filterByLocation(treatmentRecords), [treatmentRecords, analysisLocationId]);

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Beaker, Loader2, Download, CalendarDays, Stethoscope, ShieldCheck, Search, RotateCw, WalletCards, Printer, Pencil, Package } from 'lucide-react';
+import { Ban, Beaker, Loader2, Download, CalendarDays, Stethoscope, ShieldCheck, Search, RotateCw, WalletCards, Printer, Pencil, Package } from 'lucide-react';
 import { Appointment, AppointmentRescheduleLog, ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
 import { formatCurrency, Currency } from '../utils/currency';
 import { exportClinicalRecordsToPDF } from '../utils/pdfExport';
@@ -13,6 +13,7 @@ import { buildRecordsViewFilterOptions } from '../utils/recordsViewFilterOptions
 import { formatPaymentAllocations, formatPaymentMethod } from '../utils/paymentMethods';
 import { formatDoctorName as formatDisplayDoctorName } from '../utils/doctorName';
 import EditPaymentModal from './EditPaymentModal';
+import VoidPaymentModal from './VoidPaymentModal';
 import { api } from '../services/api';
 import { calculateMaterialAdjustedDoctorEarnings } from '../utils/materialCostCalculations';
 
@@ -40,6 +41,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
   const [searchTerm, setSearchTerm] = useState('');
   const [auditFilter, setAuditFilter] = useState<AuditFilter>(initialFilter);
   const [editingPayment, setEditingPayment] = useState<PaymentRecord | null>(null);
+  const [voidingPayment, setVoidingPayment] = useState<PaymentRecord | null>(null);
   const todayKey = useMemo(() => toLocalISODate(new Date()), []);
   const [dateFrom, setDateFrom] = useState(todayKey);
   const [dateTo, setDateTo] = useState(todayKey);
@@ -123,6 +125,18 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
     );
   };
 
+  const renderPaymentVoid = (payment: PaymentRecord) => {
+    if (!payment.voidedAt) return null;
+    return (
+      <div className="mt-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
+        <span className="font-black">VOID</span> on {formatCreatedAt(payment.voidedAt)}
+        {payment.voidedByUserName ? ` by ${payment.voidedByUserName}` : ''}
+        <span className="mt-1 block">Reason: {payment.voidReason || 'No reason recorded'}</span>
+        <span className="mt-1 block font-bold">Reversed: {formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)}</span>
+      </div>
+    );
+  };
+
   const renderTreatmentDescriptionList = (rec: ClinicalRecord) => {
     const groupedRecords = (rec as any)._groupedRecords as ClinicalRecord[] | undefined;
     const descriptionRecords = groupedRecords?.length ? groupedRecords : [rec];
@@ -161,7 +175,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
   };
 
   const auditRows = useMemo<AuditExportRow[]>(
-    () => buildAuditLogRows(records, appointments, !isDoctor, payments, rescheduleLogs),
+    () => buildAuditLogRows(records, appointments, !isDoctor, payments.filter((payment) => !payment.voidedAt), rescheduleLogs),
     [records, appointments, payments, rescheduleLogs, isDoctor]
   );
 
@@ -449,25 +463,26 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                   paginatedRows.map((row) => {
                     if (row.kind === 'payment') {
                       const payment = row.payment;
+                      const isVoided = Boolean(payment.voidedAt);
                       const paymentDiscount = getAuditPaymentDiscount(payment);
                       const doctorEarned = Number(payment.doctorEarned || 0);
                       return (
-                         <tr key={`payment-${payment.id}`} className="border-l-4 border-violet-300 transition-colors hover:bg-violet-50/40">
+                         <tr key={`payment-${payment.id}`} className={`border-l-4 transition-colors ${isVoided ? 'border-red-400 bg-red-50/30 hover:bg-red-50/60' : 'border-violet-300 hover:bg-violet-50/40'}`}>
                           <td className="px-4 py-4 text-sm font-semibold text-violet-700 xl:px-6">
                             <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-xs font-bold">
-                              <WalletCards size={14} /> Payment
+                              {isVoided ? <Ban size={14} /> : <WalletCards size={14} />} {isVoided ? 'VOID Payment' : 'Payment'}
                             </span>
                           </td>
                           <td className="px-4 py-4 text-sm text-slate-500 whitespace-nowrap xl:px-6">{formatCreatedAt(payment.createdAt || payment.date)}</td>
                           <td className="px-4 py-4 font-bold text-slate-900 xl:px-6">{payment.patient_name || 'Unknown'}</td>
                           <td className="px-4 py-4 text-sm text-slate-400 xl:px-6">-</td>
                           <td className="px-4 py-4 text-sm text-slate-700 xl:px-6">
-                            Patient paid {formatCurrency(payment.amount, currency)}{payment.receiptNumber ? ` · ${payment.receiptNumber}` : ''}
+                            {isVoided ? `Payment reversed ${formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)}` : `Patient paid ${formatCurrency(payment.amount, currency)}`}{payment.receiptNumber ? ` · ${payment.receiptNumber}` : ''}
                           </td>
                           <td className="px-4 py-4 text-sm text-slate-400 xl:px-6">-</td>
-                          <td className="px-4 py-4 text-right text-sm xl:px-6">{renderPatientBalance(payment.remainingBalance)}</td>
-                          <td className="px-4 py-4 text-right text-sm font-black text-violet-700 xl:px-6">{formatCurrency(payment.amount, currency)}</td>
-                          <td className="px-4 py-4 text-right text-sm font-black text-amber-700 xl:px-6">{paymentDiscount > 0 ? `-${formatCurrency(paymentDiscount, currency)}` : '-'}</td>
+                          <td className="px-4 py-4 text-right text-sm xl:px-6">{renderPatientBalance(payment.patientCurrentBalance ?? payment.remainingBalance)}</td>
+                          <td className={`px-4 py-4 text-right text-sm font-black xl:px-6 ${isVoided ? 'text-red-700 line-through' : 'text-violet-700'}`}>{formatCurrency(isVoided ? (payment.voidedAmount ?? payment.originalAmount ?? 0) : payment.amount, currency)}</td>
+                          <td className="px-4 py-4 text-right text-sm font-black text-amber-700 xl:px-6">{!isVoided && paymentDiscount > 0 ? `-${formatCurrency(paymentDiscount, currency)}` : '-'}</td>
                           <td className="px-4 py-4 text-right text-sm text-slate-400 xl:px-6">-</td>
                           <td className="px-4 py-4 text-right text-sm text-slate-400 xl:px-6">-</td>
                           <td className="px-4 py-4 text-right text-sm font-bold text-emerald-700 xl:px-6">{doctorEarned > 0 ? formatCurrency(doctorEarned, currency) : '-'}</td>
@@ -475,7 +490,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                             <div className="flex items-center justify-between gap-3">
                               <span className="text-xs font-semibold text-slate-500">{payment.createdByUserName || 'Unknown'} · {payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)}</span>
                               <div className="flex items-center gap-2">
-                                {canEditPayments ? (
+                                {canEditPayments && !isVoided ? (
                                   <button
                                     type="button"
                                     onClick={() => setEditingPayment(payment)}
@@ -485,7 +500,17 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                                     Edit
                                   </button>
                                 ) : null}
-                                {onOpenPaymentReceipt ? (
+                                {canEditPayments && !isVoided ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setVoidingPayment(payment)}
+                                    className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-bold text-red-700 hover:bg-red-100"
+                                  >
+                                    <Ban size={12} />
+                                    VOID
+                                  </button>
+                                ) : null}
+                                {onOpenPaymentReceipt && !isVoided ? (
                                   <button
                                     type="button"
                                     onClick={() => onOpenPaymentReceipt(payment)}
@@ -498,6 +523,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                               </div>
                             </div>
                             {renderPaymentCorrections(payment)}
+                            {renderPaymentVoid(payment)}
                           </td>
                         </tr>
                       );
@@ -613,18 +639,19 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
               paginatedRows.map((row) => {
                 if (row.kind === 'payment') {
                   const payment = row.payment;
+                  const isVoided = Boolean(payment.voidedAt);
                   const paymentDiscount = getAuditPaymentDiscount(payment);
                   const doctorEarned = Number(payment.doctorEarned || 0);
                   return (
-                    <div key={`payment-${payment.id}`} className="my-2 min-w-0 overflow-hidden rounded-2xl border border-violet-100 bg-white shadow-sm ring-1 ring-violet-50">
-                      <div className="border-l-4 border-violet-400 p-3 min-[380px]:p-4">
+                    <div key={`payment-${payment.id}`} className={`my-2 min-w-0 overflow-hidden rounded-2xl border bg-white shadow-sm ${isVoided ? 'border-red-200 ring-1 ring-red-50' : 'border-violet-100 ring-1 ring-violet-50'}`}>
+                      <div className={`border-l-4 p-3 min-[380px]:p-4 ${isVoided ? 'border-red-400' : 'border-violet-400'}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="text-[11px] font-black uppercase tracking-wider text-violet-600">Payment</p>
+                          <p className={`text-[11px] font-black uppercase tracking-wider ${isVoided ? 'text-red-600' : 'text-violet-600'}`}>{isVoided ? 'VOID Payment' : 'Payment'}</p>
                           <p className="mt-0.5 break-words text-sm font-bold text-slate-900">{payment.patient_name || 'Unknown'}</p>
                           <p className="mt-1 text-xs text-slate-500">{formatCreatedAt(payment.createdAt || payment.date)}</p>
                         </div>
-                        <p className="shrink-0 text-right text-sm font-black text-violet-700">{formatCurrency(payment.amount, currency)}</p>
+                        <p className={`shrink-0 text-right text-sm font-black ${isVoided ? 'text-red-700 line-through' : 'text-violet-700'}`}>{formatCurrency(isVoided ? (payment.voidedAmount ?? payment.originalAmount ?? 0) : payment.amount, currency)}</p>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         <div className="rounded-xl bg-violet-50 p-3">
@@ -633,10 +660,10 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                         </div>
                         <div className="rounded-xl bg-rose-50 p-3 text-right">
                           <p className="text-[11px] font-semibold uppercase text-rose-600">Balance</p>
-                          <div className="mt-1 text-sm">{renderPatientBalance(payment.remainingBalance)}</div>
+                          <div className="mt-1 text-sm">{renderPatientBalance(payment.patientCurrentBalance ?? payment.remainingBalance)}</div>
                         </div>
                       </div>
-                      {paymentDiscount > 0 ? (
+                      {!isVoided && paymentDiscount > 0 ? (
                         <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-amber-50 p-3">
                           <span className="text-xs font-semibold text-amber-700">Overall Discount</span>
                           <span className="min-w-0 text-right text-sm font-black text-amber-800">-{formatCurrency(paymentDiscount, currency)}</span>
@@ -650,7 +677,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                         {payment.receiptNumber || 'No receipt number'} · Recorded by {payment.createdByUserName || 'Unknown'}
                       </p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {canEditPayments ? (
+                        {canEditPayments && !isVoided ? (
                           <button
                             type="button"
                             onClick={() => setEditingPayment(payment)}
@@ -660,7 +687,17 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                             Edit Payment
                           </button>
                         ) : null}
-                        {onOpenPaymentReceipt ? (
+                        {canEditPayments && !isVoided ? (
+                          <button
+                            type="button"
+                            onClick={() => setVoidingPayment(payment)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100"
+                          >
+                            <Ban size={13} />
+                            VOID Payment
+                          </button>
+                        ) : null}
+                        {onOpenPaymentReceipt && !isVoided ? (
                           <button
                             type="button"
                             onClick={() => onOpenPaymentReceipt(payment)}
@@ -672,6 +709,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                         ) : null}
                       </div>
                       {renderPaymentCorrections(payment)}
+                      {renderPaymentVoid(payment)}
                       </div>
                     </div>
                   );
@@ -824,6 +862,16 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
         payment={editingPayment}
         onClose={() => setEditingPayment(null)}
         onSaved={async (updatedPayment) => {
+          await onPaymentCorrected?.(updatedPayment);
+        }}
+      />
+
+      <VoidPaymentModal
+        isOpen={!!voidingPayment}
+        payment={voidingPayment}
+        currency={currency}
+        onClose={() => setVoidingPayment(null)}
+        onVoided={async (updatedPayment) => {
           await onPaymentCorrected?.(updatedPayment);
         }}
       />

@@ -1,6 +1,7 @@
 import type { PaymentRecord } from '../types';
 
 export const getPaymentServiceFeeAmount = (payment: PaymentRecord): number => {
+  if (payment.voidedAt) return 0;
   const snapshotAmount = Number(payment.receiptSnapshot?.payment?.serviceFeeAmount || 0);
   if (Number.isFinite(snapshotAmount) && snapshotAmount > 0) return snapshotAmount;
 

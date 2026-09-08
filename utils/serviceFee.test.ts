@@ -38,4 +38,10 @@ describe('patient service fee visit checks', () => {
       payment({ receiptSnapshot: undefined })
     ], 'patient-1', '2026-07-16')).toBe(false);
   });
+
+  it('does not treat a voided payment as a recorded service fee', () => {
+    expect(hasRecordedServiceFeeForVisit([
+      payment({ amount: 0, clearedAmount: 0, voidedAt: '2026-07-16T09:30:00Z', voidedAmount: 10_000 })
+    ], 'patient-1', '2026-07-16')).toBe(false);
+  });
 });

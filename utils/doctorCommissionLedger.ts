@@ -13,6 +13,9 @@ export interface CommissionTreatmentInput {
   commissionPercentage?: number | null;
   commissionPerVisit?: number | null;
   customCommissionPercentage?: number | null;
+  commissionSnapshotType?: DoctorCommissionType | string | null;
+  commissionSnapshotPercentage?: number | null;
+  commissionSnapshotPerVisit?: number | null;
 }
 
 export interface CommissionPaymentInput {
@@ -205,7 +208,7 @@ export const calculateCommissionLedgerEntries = (
   );
   const resolveTreatmentMode = (treatment: CommissionTreatmentInput): ExistingCommissionEntryInput['calculationMode'] =>
     usesFlatVisitCommission({
-      commissionType: treatment.commissionType,
+      commissionType: treatment.commissionSnapshotType ?? treatment.commissionType,
       specialization: treatment.specialization
     }) ? 'flat_visit' : 'percentage';
   const percentageRows: CalculatedCommissionEntry[] = [];
@@ -257,7 +260,10 @@ export const calculateCommissionLedgerEntries = (
 
       const rawRate = existing?.calculationMode === 'percentage'
         ? Number(existing.commissionRate || 0)
-        : Number(treatment.customCommissionPercentage ?? treatment.commissionPercentage ?? 0);
+        : Number(treatment.commissionSnapshotPercentage
+          ?? treatment.customCommissionPercentage
+          ?? treatment.commissionPercentage
+          ?? 0);
       const rate = toPercentageRate(rawRate);
       percentageCandidates.push({ ...allocation, treatment, rate, visitKey });
       percentageTreatmentIds.add(treatment.id);
@@ -287,7 +293,10 @@ export const calculateCommissionLedgerEntries = (
           (candidate) => candidate.treatment.id === treatment.id
         );
         const treatmentRate = treatmentCandidate?.rate ?? toPercentageRate(
-          treatment.customCommissionPercentage ?? treatment.commissionPercentage ?? 0
+          treatment.commissionSnapshotPercentage
+            ?? treatment.customCommissionPercentage
+            ?? treatment.commissionPercentage
+            ?? 0
         );
         return treatmentRate === rate
           ? sum + toNonNegativeFiniteNumber(treatment.materialCost)
@@ -384,7 +393,11 @@ export const calculateCommissionLedgerEntries = (
     if (!selected?.treatment.doctorId) return;
     const rawFlatAmount = existing
       ? Number(existing.commissionRate || 0)
-      : Math.max(0, Number(selected.treatment.commissionPerVisit || 0));
+      : Math.max(0, Number(
+        selected.treatment.commissionSnapshotPerVisit
+          ?? selected.treatment.commissionPerVisit
+          ?? 0
+      ));
     const flatAmount = toNonNegativeFiniteNumber(rawFlatAmount);
 
     flatRows.push({

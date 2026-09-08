@@ -78,6 +78,8 @@ export interface ClinicalRecord {
   doctor_commission_type?: DoctorCommissionType | null;
   doctor_commission_percentage?: number | null;
   doctor_commission_per_visit?: number | null;
+  doctor_commission_source?: 'doctor_default' | 'treatment_override' | 'ledger_history' | null;
+  doctor_commission_snapshot_at?: string | null;
   treatment_type_id?: string | null;
   teeth: number[];
   description: string;
@@ -191,6 +193,11 @@ export interface PaymentRecord {
   createdByUserId?: string | null;
   createdByUserName?: string | null;
   corrections?: PaymentCorrection[];
+  voidedAt?: string | null;
+  voidReason?: string | null;
+  voidedByUserId?: string | null;
+  voidedByUserName?: string | null;
+  voidedAmount?: number | null;
   // Audit-only value calculated from the immutable commission ledger for this payment.
   doctorEarned?: number;
 }

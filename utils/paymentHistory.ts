@@ -7,7 +7,7 @@ export const getPatientPaymentHistory = (
   payments: PaymentRecord[],
   patientId: string
 ): PaymentRecord[] => payments
-  .filter((payment) => payment.patientId === patientId)
+  .filter((payment) => payment.patientId === patientId && !payment.voidedAt)
   .sort((a, b) => {
     const dateComparison = paymentSortKey(b).localeCompare(paymentSortKey(a));
     return dateComparison !== 0 ? dateComparison : b.id.localeCompare(a.id);

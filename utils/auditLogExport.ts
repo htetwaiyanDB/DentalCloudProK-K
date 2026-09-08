@@ -53,6 +53,7 @@ const getTreatmentDiscount = (record?: ClinicalRecord): number => {
 export const getAuditPaymentDiscount = (
   payment: PaymentRecord & { _treatmentDiscountAmount?: number }
 ): number => {
+  if (payment.voidedAt) return 0;
   const snapshotDiscount = (payment.receiptSnapshot?.treatments || []).reduce(
     (sum, treatment) => {
       const explicitDiscount = getPositiveNumber(treatment.discountAmount);
@@ -70,6 +71,7 @@ export const getAuditPaymentDiscount = (
 };
 
 const getPaymentServiceFeeAmount = (payment: PaymentRecord): number => {
+  if (payment.voidedAt) return 0;
   const snapshotFee = getPositiveNumber(payment.receiptSnapshot?.payment?.serviceFeeAmount);
   if (snapshotFee > 0) return snapshotFee;
 
@@ -154,6 +156,7 @@ export const buildAuditLogRows = (
   payments: PaymentRecord[] = [],
   rescheduleLogs: AppointmentRescheduleLog[] = []
 ): AuditExportRow[] => {
+  const visiblePayments = payments.filter((payment) => !payment.voidedAt);
   const groupedTreatmentMap = new Map<string, ClinicalRecord[]>();
 
   records.forEach((record) => {
@@ -186,7 +189,7 @@ export const buildAuditLogRows = (
     base.discountAmount = totalDiscount;
     base.doctorEarnings = totalEarnings > 0 ? totalEarnings : base.doctorEarnings;
     base.patient_type = patientType;
-    base.serviceCharges = calculateTreatmentServiceCharges(sorted, payments, appointments);
+    base.serviceCharges = calculateTreatmentServiceCharges(sorted, visiblePayments, appointments);
     base._groupedRecords = sorted;
 
     treatmentRows.push({
@@ -243,7 +246,7 @@ export const buildAuditLogRows = (
         commissionPercentage: record.doctor_commission_percentage,
         commissionPerVisit: record.doctor_commission_per_visit
       })),
-      payments.map((payment) => ({
+      visiblePayments.map((payment) => ({
         id: payment.id,
         patientId: payment.patientId,
         date: payment.date,
@@ -261,7 +264,7 @@ export const buildAuditLogRows = (
     );
   });
   const paymentRows: AuditExportRow[] = includeAppointments
-    ? payments.map((payment) => ({
+    ? visiblePayments.map((payment) => ({
         kind: 'payment',
         sortDate: payment.createdAt || `${payment.date || ''}T23:59:58`,
         payment: {
@@ -406,20 +409,25 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
 
     if (row.kind === 'payment') {
       const payment = row.payment;
+      const isVoided = Boolean(payment.voidedAt);
       return {
         type: 'Payment',
         dateTime: formatAuditCreatedAt(payment.createdAt || payment.date),
         patient: payment.patient_name || 'Unknown',
         clinician: '-',
-        activity: `Patient paid ${formatCurrency(payment.amount, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}`,
-        recordedBy: payment.createdByUserName || 'Unknown',
+        activity: isVoided
+          ? `VOID — reversed ${formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}\nReason: ${payment.voidReason || 'Not recorded'}`
+          : `Patient paid ${formatCurrency(payment.amount, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}`,
+        recordedBy: isVoided
+          ? `${payment.voidedByUserName || 'Unknown'} (voided)`
+          : payment.createdByUserName || 'Unknown',
         patientType: '-',
-        patientBalance: formatAuditPatientBalance(payment.remainingBalance, currency),
+        patientBalance: formatAuditPatientBalance(payment.patientCurrentBalance ?? payment.remainingBalance, currency),
         amount: payment.amount,
-        discount: getAuditPaymentDiscount(payment) || null,
+        discount: isVoided ? null : getAuditPaymentDiscount(payment) || null,
         serviceCharges: null,
         doctorEarned: getPositiveNumber(payment.doctorEarned) || null,
-        paymentMethod: payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)
+        paymentMethod: isVoided ? 'VOID' : payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)
       };
     }
 

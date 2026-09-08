@@ -236,7 +236,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
   );
 
   const filteredPaymentRecords = useMemo(
-    () => paymentRecords.filter(record => isWithinRange(record.date)),
+    () => paymentRecords.filter(record => !record.voidedAt && isWithinRange(record.date)),
     [paymentRecords, dateFrom, dateTo]
   );
 

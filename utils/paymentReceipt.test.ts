@@ -179,6 +179,21 @@ describe('paymentReceipt', () => {
     expect(getUncapturedMedicineSalesForReceipt([sale], [priorPayment], 'patient-1', [], '2026-08-04')).toEqual([]);
   });
 
+  it('makes medicine from a voided receipt available for the replacement payment', () => {
+    const sale = { id: 'medicine-voided', location_id: 'branch-1', patient_id: 'patient-1', medicine_id: 'm1', medicine_name: 'Medicine', quantity: 1, unit_price: 80, total_price: 80, date: '2026-08-04' };
+    const voidedPayment = {
+      id: 'payment-voided', patientId: 'patient-1', amount: 0, clearedAmount: 0, voidedAmount: 80,
+      voidedAt: '2026-08-04T10:00:00Z', date: '2026-08-04', type: 'PARTIAL' as const, remainingBalance: 80,
+      receiptSnapshot: buildPaymentReceiptSnapshot({
+        patient: { id: 'patient-1', location_id: 'branch-1', name: 'Patient', email: '', phone: '', balance: 0, loyalty_points: 0 },
+        amountPaid: 80, paymentMethod: 'CASH', paymentDate: '2026-08-04', receiptNumber: 'REC-VOID', balanceBefore: 80, balanceAfter: 0,
+        paymentStatus: 'FULL', medicines: [sale], clinic
+      })
+    };
+
+    expect(getUncapturedMedicineSalesForReceipt([sale], [voidedPayment], 'patient-1', [], '2026-08-04')).toEqual([sale]);
+  });
+
   it('preserves discounted and FOC medicine pricing in immutable snapshots', () => {
     const snapshot = buildPaymentReceiptSnapshot({
       patient: { id: 'patient-1', location_id: 'branch-1', name: 'Patient', email: '', phone: '', balance: 0, loyalty_points: 0 },

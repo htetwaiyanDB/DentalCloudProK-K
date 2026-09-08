@@ -20,6 +20,39 @@ const treatment = (overrides: Partial<CommissionTreatmentInput> = {}): Commissio
 });
 
 describe('doctor commission ledger', () => {
+  it('uses the treatment snapshot for the first payment after the doctor rate changes', () => {
+    const treatments = [treatment({
+      commissionPercentage: 20,
+      commissionSnapshotType: 'percentage',
+      commissionSnapshotPercentage: 10
+    })];
+    const allocations = allocateCommissionablePayments(treatments, [{
+      id: 'payment-after-change', patientId: 'patient-1', date: '2026-07-01',
+      commissionableAmount: 100_000, treatmentIds: ['treatment-1']
+    }]);
+
+    expect(calculateCommissionLedgerEntries(treatments, allocations)[0]).toMatchObject({
+      calculationMode: 'percentage', commissionRate: 10, earnings: 10_000
+    });
+  });
+
+  it('keeps a fixed treatment snapshot after the doctor changes to percentage', () => {
+    const treatments = [treatment({
+      commissionType: 'percentage',
+      commissionPercentage: 20,
+      commissionSnapshotType: 'fixed',
+      commissionSnapshotPerVisit: 15_000
+    })];
+    const allocations = allocateCommissionablePayments(treatments, [{
+      id: 'payment-after-mode-change', patientId: 'patient-1', date: '2026-07-01',
+      commissionableAmount: 100_000, treatmentIds: ['treatment-1']
+    }]);
+
+    expect(calculateCommissionLedgerEntries(treatments, allocations)[0]).toMatchObject({
+      calculationMode: 'flat_visit', commissionRate: 15_000, earnings: 15_000
+    });
+  });
+
   it('calculates the clinic-rule commission from a mixed partial payment', () => {
     const treatments = [treatment({ cost: 6_130_000, materialCost: 20_000, commissionPercentage: 40 })];
     const allocations = allocateCommissionablePayments(treatments, [{

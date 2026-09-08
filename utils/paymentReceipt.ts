@@ -44,7 +44,7 @@ export const getUncapturedMedicineSalesForReceipt = (
   referenceDate?: string
 ): MedicineSale[] => {
   const capturedMedicineIds = new Set(paymentRecords
-    .filter((payment) => payment.patientId === patientId)
+    .filter((payment) => payment.patientId === patientId && !payment.voidedAt)
     .flatMap((payment) => (payment.receiptSnapshot?.medicines || []).map((medicine) => medicine.id)));
   const selectedTreatmentIds = new Set(selectedTreatments.map((treatment) => treatment.id));
   const selectedDates = new Set(selectedTreatments.map((treatment) => treatment.date).filter(Boolean));

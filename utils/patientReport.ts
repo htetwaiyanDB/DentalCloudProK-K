@@ -122,7 +122,7 @@ export const buildPatientReport = ({
   const patientMedicines = medicineSales.filter((sale) => sale.patient_id === patient.id);
   const patientPayments = Array.from(new Map(
     payments
-      .filter((payment) => payment.patientId === patient.id)
+      .filter((payment) => payment.patientId === patient.id && !payment.voidedAt)
       .map((payment) => [getPaymentDedupeKey(payment), payment])
   ).values()).sort(newestFirst);
 

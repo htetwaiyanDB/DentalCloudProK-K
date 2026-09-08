@@ -40,6 +40,15 @@ describe('patient payment history', () => {
     expect(result.map((item) => item.id)).toEqual(['afternoon', 'morning']);
   });
 
+  it('hides voided records from patient-facing payment history', () => {
+    const result = getPatientPaymentHistory([
+      payment({ id: 'active' }),
+      payment({ id: 'voided', amount: 0, clearedAmount: 0, voidedAt: '2026-08-01T15:00:00Z', voidedAmount: 500 })
+    ], 'patient-1');
+
+    expect(result.map((item) => item.id)).toEqual(['active']);
+  });
+
   it('uses corrected financial values and stored receipt metadata when available', () => {
     const record = payment({
       amount: 500,

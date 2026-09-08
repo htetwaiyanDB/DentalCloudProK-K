@@ -1070,6 +1070,7 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                     </td>
                   </tr>
                 ) : paymentHistory.map((payment) => {
+                  const isVoided = Boolean(payment.voidedAt);
                   const paymentMethod = payment.allocations?.length
                     ? formatPaymentAllocations(payment.allocations)
                     : formatPaymentMethod(payment.paymentMethod);
@@ -1077,7 +1078,7 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                   const paymentTime = formatPaymentTime(payment.createdAt);
 
                   return (
-                    <tr key={payment.id} className="transition-colors hover:bg-violet-50/40">
+                    <tr key={payment.id} className={`transition-colors ${isVoided ? 'bg-red-50/40 hover:bg-red-50/70' : 'hover:bg-violet-50/40'}`}>
                       <td className="whitespace-nowrap px-5 py-4 text-gray-600 md:px-7">
                         <div className="font-semibold text-gray-800">{payment.date}</div>
                         {paymentTime && <div className="mt-0.5 text-xs text-gray-400">{paymentTime}</div>}
@@ -1087,13 +1088,16 @@ const ClinicalView: React.FC<ClinicalViewProps> = ({
                         {payment.corrections?.length ? (
                           <span className="mt-2 block text-xs font-bold text-amber-700">Corrected by Admin · {payment.corrections.length} {payment.corrections.length === 1 ? 'change' : 'changes'}</span>
                         ) : null}
+                        {isVoided ? (
+                          <span className="mt-2 block text-xs font-black text-red-700">VOID · {payment.voidReason || 'Payment reversed'}</span>
+                        ) : null}
                       </td>
                       <td className="px-5 py-4 font-semibold text-gray-800">{paymentMethod}</td>
                       <td className="px-5 py-4 text-gray-600">{payment.createdByUserName || payment.receiptSnapshot?.payment.recordedByUserName || 'Unknown'}</td>
-                      <td className="whitespace-nowrap px-5 py-4 text-right font-black text-violet-700">{formatCurrency(getPaymentReceivedAmount(payment), currency)}</td>
+                      <td className={`whitespace-nowrap px-5 py-4 text-right font-black ${isVoided ? 'text-red-700' : 'text-violet-700'}`}>{isVoided ? `VOID (${formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)})` : formatCurrency(getPaymentReceivedAmount(payment), currency)}</td>
                       <td className="whitespace-nowrap px-5 py-4 text-right font-bold text-gray-900">{formatCurrency(getPaymentBalanceAfter(payment), currency)}</td>
                       <td className="px-5 py-4 text-center md:pr-7">
-                        {onOpenPaymentReceipt ? (
+                        {onOpenPaymentReceipt && !isVoided ? (
                           <button
                             type="button"
                             onClick={() => onOpenPaymentReceipt(payment)}

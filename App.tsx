@@ -2271,6 +2271,9 @@ const App: React.FC = () => {
   const handlePaymentCorrected = async (updatedPayment: PaymentRecord) => {
     const updatedPatientBalance = updatedPayment.patientCurrentBalance ?? updatedPayment.remainingBalance;
     const applyPaymentUpdate = (items: PaymentRecord[]) => {
+      if (updatedPayment.voidedAt) {
+        return items.filter((item) => item.id !== updatedPayment.id);
+      }
       const nextItems = items.some((item) => item.id === updatedPayment.id)
         ? items.map((item) => (item.id === updatedPayment.id ? updatedPayment : item))
         : [updatedPayment, ...items];

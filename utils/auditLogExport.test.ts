@@ -494,4 +494,15 @@ describe('audit log export rows', () => {
 
     expect(filterAuditLogRowsForExport(rows, { searchTerm: '1A' })).toHaveLength(1);
   });
+
+  it('keeps voided payments out of every audit-log UI and export row', () => {
+    const voidedPayment: PaymentRecord = {
+      id: 'pay-voided', patientId: 'pat-1', patient_name: 'Aung Min', amount: 0,
+      clearedAmount: 0, originalAmount: 32_000, voidedAmount: 32_000,
+      voidedAt: '2026-09-08T09:56:00Z', voidReason: 'Duplicate payment collected',
+      date: '2026-09-08', type: 'PARTIAL', remainingBalance: 32_000
+    };
+
+    expect(buildAuditLogRows([], [], true, [voidedPayment])).toEqual([]);
+  });
 });
