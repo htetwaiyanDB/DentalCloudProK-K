@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const supabaseMock = vi.hoisted(() => ({ rpc: vi.fn() }));
+const supabaseMock = vi.hoisted(() => ({
+  rpc: vi.fn(),
+  from: vi.fn()
+}));
 
 vi.mock('./supabase', () => ({
-  supabase: { rpc: supabaseMock.rpc },
+  supabase: { rpc: supabaseMock.rpc, from: supabaseMock.from },
   supabaseUrl: '',
   supabaseAnonKey: ''
 }));
@@ -11,7 +14,18 @@ vi.mock('./supabase', () => ({
 import { api } from './api';
 
 describe('doctor treatment commission replacement', () => {
-  beforeEach(() => supabaseMock.rpc.mockReset());
+  beforeEach(() => {
+    supabaseMock.rpc.mockReset();
+    supabaseMock.from.mockReset();
+    const emptyTreatmentQuery: any = {
+      select: vi.fn(),
+      eq: vi.fn()
+    };
+    emptyTreatmentQuery.select.mockReturnValue(emptyTreatmentQuery);
+    emptyTreatmentQuery.eq.mockReturnValue(emptyTreatmentQuery);
+    emptyTreatmentQuery.then = (resolve: (value: unknown) => unknown) => resolve({ data: [], error: null });
+    supabaseMock.from.mockReturnValue(emptyTreatmentQuery);
+  });
 
   it('uses one transactional RPC for the complete normalized list', async () => {
     supabaseMock.rpc.mockResolvedValue({ data: null, error: null });
@@ -31,6 +45,7 @@ describe('doctor treatment commission replacement', () => {
       p_user_id: 'user-1',
       p_session_token: 'token-1'
     });
+    expect(supabaseMock.from).toHaveBeenCalledWith('treatments');
   });
 
   it('passes fixed treatment amounts to the transactional RPC', async () => {

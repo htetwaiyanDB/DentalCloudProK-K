@@ -373,6 +373,51 @@ const recalculateDoctorEarningsForTreatments = async (treatmentIds: string[]): P
   await Promise.all(patientIds.map((patientId) => recalculatePatientDoctorCommissions(String(patientId))));
 };
 
+const refreshDoctorDefaultPercentageSnapshots = async (
+  doctorId: string,
+  commissionPercentage: number
+): Promise<void> => {
+  const { data: affectedTreatments, error: affectedTreatmentsError } = await supabase
+    .from('treatments')
+    .select('id, patient_id')
+    .eq('doctor_id', doctorId)
+    .eq('commission_type_snapshot', 'percentage')
+    .eq('commission_source_snapshot', 'doctor_default');
+  if (affectedTreatmentsError) {
+    if (isMissingColumnError(affectedTreatmentsError, 'commission_type_snapshot')) return;
+    throw new Error(affectedTreatmentsError.message);
+  }
+
+  const treatmentIds = (affectedTreatments || []).map((treatment: any) => String(treatment.id)).filter(Boolean);
+  if (treatmentIds.length === 0) return;
+
+  const { error: snapshotUpdateError } = await supabase
+    .from('treatments')
+    .update({
+      commission_percentage_snapshot: commissionPercentage,
+      commission_snapshot_at: new Date().toISOString()
+    })
+    .in('id', treatmentIds);
+  if (snapshotUpdateError) throw new Error(snapshotUpdateError.message);
+
+  // Existing percentage ledger rows are historical input for ordinary payment
+  // corrections. This explicit doctor-rate edit is different: discard only
+  // the affected rows so the recalculation takes its rate from the refreshed
+  // doctor-default treatment snapshots.
+  const { error: ledgerDeleteError } = await supabase
+    .from('doctor_commission_entries')
+    .delete()
+    .in('treatment_id', treatmentIds);
+  if (ledgerDeleteError && !isMissingRelationError(ledgerDeleteError, 'doctor_commission_entries')) {
+    throw new Error(ledgerDeleteError.message);
+  }
+
+  const patientIds = Array.from(new Set((affectedTreatments || [])
+    .map((treatment: any) => String(treatment.patient_id || ''))
+    .filter(Boolean)));
+  await Promise.all(patientIds.map((patientId) => recalculatePatientDoctorCommissions(patientId)));
+};
+
 const resolvePaymentCommissionTreatmentIds = async (payment: PaymentRecord): Promise<string[]> => {
   const linkedTreatmentIds = Array.from(new Set((payment.treatmentIds || []).filter(Boolean)));
   if (linkedTreatmentIds.length > 0) return linkedTreatmentIds;
@@ -4423,6 +4468,9 @@ export const api = {
           throw new Error('Transactional doctor commission saving is not installed. Run database/configurable_doctor_commission_migration.sql before saving custom rates.');
         }
         throw new Error(error.message);
+      }
+      if (commissionType === 'percentage') {
+        await refreshDoctorDefaultPercentageSnapshots(doctorId, commissionPercentage);
       }
     },
     getApplicableRate: async (doctorId: string, treatmentId: string): Promise<number> => {
