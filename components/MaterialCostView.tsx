@@ -25,6 +25,9 @@ interface MaterialCostViewProps {
   currency: Currency;
   canManageMaterials: boolean;
   onRefresh: () => void | Promise<void>;
+  // Optional fast path after a cost save: refresh only the affected patient's
+  // rows instead of reloading every clinic record, payment, and dashboard metric.
+  onCostsSaved?: (patientId?: string | null) => Promise<void> | void;
 }
 
 type TreatmentAuditRow = Extract<AuditExportRow, { kind: 'treatment' }>;
@@ -36,7 +39,7 @@ const getTreatmentRecordIds = (record: ClinicalRecord & { _groupedRecords?: Clin
   return groupedRecords.map((item) => item.id).filter(Boolean);
 };
 
-const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh }) => {
+const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh, onCostsSaved }) => {
   const summaryRequestVersion = React.useRef(0);
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -252,7 +255,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     );
   };
 
-  const handleMaterialSaved = async (summary: TreatmentCostSummary & { treatmentId: string }) => {
+  const handleMaterialSaved = async (summary: TreatmentCostSummary & { treatmentId: string; patientId?: string | null }) => {
     setMaterialSummaries((current) => {
       const next = { ...current };
       if (summary.itemCount > 0 && summary.totalAmount > 0) {
@@ -272,7 +275,13 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
       }
       return next;
     });
-    await onRefresh();
+    if (onCostsSaved) {
+      // Saves only change one patient's ledger, so refresh that patient's rows
+      // instead of awaiting a full clinic-wide reload before closing the modal.
+      await onCostsSaved(summary.patientId);
+    } else {
+      await onRefresh();
+    }
     await loadMaterialSummaries(paginatedRows);
   };
 

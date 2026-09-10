@@ -138,10 +138,27 @@ const getPaymentReceiptTreatmentIds = (payment: any): string[] => {
   return (snapshot?.treatments || []).map((treatment) => treatment.id).filter(Boolean);
 };
 
+// Ledger recalculation runs on every MLS cost save. Writing a patient's full
+// ledger back one HTTP request at a time used to dominate that save's runtime,
+// so rows are now diffed against storage and only genuine changes are written.
+const sameLedgerText = (left: unknown, right: unknown): boolean => {
+  const normalize = (value: unknown): string => {
+    if (value === null || value === undefined) return '';
+    const text = String(value).trim();
+    const timestampDate = /^(\d{4}-\d{2}-\d{2})T/.exec(text);
+    return timestampDate ? timestampDate[1] : text;
+  };
+  return normalize(left) === normalize(right);
+};
+
+const sameLedgerMoney = (left: unknown, right: unknown): boolean => {
+  return Math.abs(Number(left || 0) - Number(right || 0)) < 0.005;
+};
+
 const recalculatePatientDoctorCommissions = async (patientId: string): Promise<void> => {
   let { data: treatmentRows, error: treatmentError }: { data: any[] | null; error: any } = await supabase
     .from('treatments')
-    .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
+    .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, doctor_earnings, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
     .eq('patient_id', patientId);
 
   if (treatmentError && isMissingColumnError(treatmentError, 'commission_type_snapshot')) {
@@ -165,7 +182,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
   if (treatmentError && isMissingColumnError(treatmentError, 'treatment_type_id')) {
     const fallback = await supabase
       .from('treatments')
-      .select('id, location_id, patient_id, doctor_id, date, cost, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
+      .select('id, location_id, patient_id, doctor_id, date, cost, doctor_earnings, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
       .eq('patient_id', patientId);
     treatmentRows = (fallback.data || []).map((row: any) => ({ ...row, treatment_type_id: null }));
     treatmentError = fallback.error;
@@ -180,7 +197,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
       .from('payments')
       .select('id, patient_id, payment_date, created_at, amount, cleared_amount, treatment_ids, receipt_snapshot')
       .eq('patient_id', patientId),
-    api.materialCosts.getTotalsByTreatmentIds(treatmentIds)
+    api.materialCosts.getTotalsByTreatmentIds(treatmentIds, { idBatchSize: 50 })
   ]);
   if (paymentError && !isMissingRelationError(paymentError, 'payments')) throw new Error(paymentError.message);
 
@@ -201,7 +218,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
 
   const existingResult = await supabase
     .from('doctor_commission_entries')
-    .select('id, payment_id, treatment_id, commission_rate, calculation_mode, visit_key')
+    .select('id, payment_id, treatment_id, doctor_id, patient_id, location_id, payment_date, treatment_date, visit_key, calculation_mode, allocated_payment, material_deduction, commission_base, commission_rate, earnings')
     .eq('patient_id', patientId);
   const ledgerInstalled = !existingResult.error;
   if (existingResult.error && !isMissingRelationError(existingResult.error, 'doctor_commission_entries')) {
@@ -258,10 +275,28 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
   if (ledgerInstalled) {
     const treatmentById = new Map(treatmentRows.map((row: any) => [row.id, row]));
     const desiredKeys = new Set(calculatedEntries.map((entry) => `${entry.paymentId}|${entry.treatmentId}`));
-    if (calculatedEntries.length > 0) {
+    const storedRowsByKey = new Map((existingResult.data || []).map((row: any) => [`${row.payment_id}|${row.treatment_id}`, row]));
+    const entryIsUnchanged = (entry: (typeof calculatedEntries)[number]): boolean => {
+      const stored = storedRowsByKey.get(`${entry.paymentId}|${entry.treatmentId}`);
+      if (!stored) return false;
+      return sameLedgerText(stored.doctor_id, entry.doctorId)
+        && sameLedgerText(stored.patient_id, entry.patientId)
+        && sameLedgerText(stored.location_id, treatmentById.get(entry.treatmentId)?.location_id)
+        && sameLedgerText(stored.payment_date, entry.paymentDate)
+        && sameLedgerText(stored.treatment_date, entry.treatmentDate)
+        && sameLedgerText(stored.visit_key, entry.visitKey)
+        && sameLedgerText(stored.calculation_mode, entry.calculationMode)
+        && sameLedgerMoney(stored.allocated_payment, entry.amount)
+        && sameLedgerMoney(stored.material_deduction, entry.materialDeduction)
+        && sameLedgerMoney(stored.commission_base, entry.commissionBase)
+        && sameLedgerMoney(stored.commission_rate, entry.commissionRate)
+        && sameLedgerMoney(stored.earnings, entry.earnings);
+    };
+    const changedEntries = calculatedEntries.filter((entry) => !entryIsUnchanged(entry));
+    if (changedEntries.length > 0) {
       const { error } = await supabase
         .from('doctor_commission_entries')
-        .upsert(calculatedEntries.map((entry) => ({
+        .upsert(changedEntries.map((entry) => ({
           payment_id: entry.paymentId,
           treatment_id: entry.treatmentId,
           doctor_id: entry.doctorId,
@@ -293,7 +328,14 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     summary[entry.treatmentId] = roundMoney((summary[entry.treatmentId] || 0) + entry.earnings);
     return summary;
   }, {} as Record<string, number>);
-  await Promise.all(treatmentRows.map(async (treatment: any) => {
+  // Only write back treatments whose stored earnings actually differ from the
+  // recalculated total; a cost edit usually shifts one visit group, not history.
+  const earningsChangedTreatments = treatmentRows.filter((treatment: any) => {
+    const targetEarnings = earningsByTreatment[treatment.id] || 0;
+    const storedEarnings = Number(treatment.doctor_earnings);
+    return !Number.isFinite(storedEarnings) || Math.abs(storedEarnings - targetEarnings) >= 0.005;
+  });
+  await Promise.all(earningsChangedTreatments.map(async (treatment: any) => {
     const { error } = await supabase
       .from('treatments')
       .update({ doctor_earnings: earningsByTreatment[treatment.id] || 0 })
@@ -3116,13 +3158,13 @@ export const api = {
 
     getTotalsByTreatmentIds: async (
       treatmentIds: string[],
-      options?: { onProgress?: (completed: number, total: number) => void; requireCostTables?: boolean }
+      options?: { onProgress?: (completed: number, total: number) => void; requireCostTables?: boolean; idBatchSize?: number }
     ): Promise<Record<string, TreatmentCostSummary>> => {
       const uniqueIds = Array.from(new Set(treatmentIds.filter(Boolean)));
       if (uniqueIds.length === 0) return {};
 
       try {
-        const auditIdBatches = chunkUniqueIds(uniqueIds);
+        const auditIdBatches = chunkUniqueIds(uniqueIds, options?.idBatchSize);
         const auditBatches = await mapWithConcurrency(auditIdBatches, REPORT_REQUEST_CONCURRENCY, async (idBatch) => {
           const { data, error: auditLogError } = await supabase
             .from('audit_logs')
@@ -3150,7 +3192,7 @@ export const api = {
           return {};
         }
 
-        const materialIdBatches = chunkUniqueIds(auditIds);
+        const materialIdBatches = chunkUniqueIds(auditIds, options?.idBatchSize);
         const materialBatches = await mapWithConcurrency(materialIdBatches, REPORT_REQUEST_CONCURRENCY, async (auditIdBatch) => {
           let { data, error: materialError } = await supabase
             .from('patient_material_costs')
@@ -3582,6 +3624,7 @@ export const api = {
       dateFrom?: string;
       dateTo?: string;
       doctorId?: string;
+      patientId?: string;
       includeCommissionEntries?: boolean;
       throwOnError?: boolean;
     }): Promise<ClinicalRecord[]> => {
@@ -3601,6 +3644,7 @@ export const api = {
           if (options?.dateFrom) query = query.gte('date', options.dateFrom);
           if (options?.dateTo) query = query.lte('date', options.dateTo);
           if (options?.doctorId) query = query.eq('doctor_id', options.doctorId);
+          if (options?.patientId) query = query.eq('patient_id', options.patientId);
           let { data, error } = await query;
 
           if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
@@ -3614,6 +3658,7 @@ export const api = {
             if (options?.dateFrom) fallbackQuery = fallbackQuery.gte('date', options.dateFrom);
             if (options?.dateTo) fallbackQuery = fallbackQuery.lte('date', options.dateTo);
             if (options?.doctorId) fallbackQuery = fallbackQuery.eq('doctor_id', options.doctorId);
+            if (options?.patientId) fallbackQuery = fallbackQuery.eq('patient_id', options.patientId);
             const fallback = await fallbackQuery;
             data = fallback.data;
             error = fallback.error;

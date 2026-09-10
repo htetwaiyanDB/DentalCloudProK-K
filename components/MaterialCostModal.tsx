@@ -15,7 +15,7 @@ interface MaterialCostModalProps {
   record: (ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) | null;
   currency: Currency;
   onClose: () => void;
-  onSaved: (summary: TreatmentCostSummary & { treatmentId: string }) => void | Promise<void>;
+  onSaved: (summary: TreatmentCostSummary & { treatmentId: string; patientId?: string | null }) => void | Promise<void>;
 }
 
 type CostDraft = PatientMaterialCostInput & MaterialCostDraftRow;
@@ -160,7 +160,7 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, record, c
       const savedMaterialTotal = materialRows.reduce((sum, item) => sum + item.totalAmount, 0);
       const savedLabTotal = labRows.reduce((sum, item) => sum + item.totalAmount, 0);
       const savedSpecialDoctorTotal = specialDoctorRows.reduce((sum, item) => sum + item.totalAmount, 0);
-      const summary = { treatmentId: record.id, auditLogId: result.auditLogId, materialTotal: savedMaterialTotal, materialItemCount: materialRows.length, labTotal: savedLabTotal, labItemCount: labRows.length, specialDoctorTotal: savedSpecialDoctorTotal, specialDoctorItemCount: specialDoctorRows.length, totalAmount: savedMaterialTotal + savedLabTotal + savedSpecialDoctorTotal, itemCount: result.items.length };
+      const summary = { treatmentId: record.id, patientId: record.patient_id || record._groupedRecords?.[0]?.patient_id || null, auditLogId: result.auditLogId, materialTotal: savedMaterialTotal, materialItemCount: materialRows.length, labTotal: savedLabTotal, labItemCount: labRows.length, specialDoctorTotal: savedSpecialDoctorTotal, specialDoctorItemCount: specialDoctorRows.length, totalAmount: savedMaterialTotal + savedLabTotal + savedSpecialDoctorTotal, itemCount: result.items.length };
       if (result.commissionRefreshPending) {
         setError('Treatment costs were saved, but doctor commission refresh is still pending. Keep this window open and select Save Treatment Costs again to retry.');
         return;
