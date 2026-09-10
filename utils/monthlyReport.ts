@@ -39,6 +39,7 @@ export interface MonthlyReportRow {
   balance: number;
   labCost: number;
   materialCost: number;
+  specialDoctorCost: number;
   doctorCost: number;
   totalCost: number;
   netProfit: number;
@@ -58,6 +59,7 @@ export interface MonthlyReportSummary {
   balance: number;
   labCost: number;
   materialCost: number;
+  specialDoctorCost: number;
   doctorCost: number;
   totalCost: number;
   netProfit: number;
@@ -152,6 +154,7 @@ export const groupMonthlyReportDetailRows = (rows: MonthlyReportRow[]): MonthlyR
     const balance = sum(row => row.balance);
     const labCost = sum(row => row.labCost);
     const materialCost = sum(row => row.materialCost);
+    const specialDoctorCost = sum(row => row.specialDoctorCost);
     const doctorCost = sum(row => row.doctorCost);
     const totalCost = sum(row => row.totalCost);
     const netProfit = sum(row => row.netProfit);
@@ -168,6 +171,7 @@ export const groupMonthlyReportDetailRows = (rows: MonthlyReportRow[]): MonthlyR
       balance,
       labCost,
       materialCost,
+      specialDoctorCost,
       doctorCost,
       totalCost,
       netProfit,
@@ -219,6 +223,7 @@ const summarizeRows = (rows: MonthlyReportRow[]): MonthlyReportSummary => {
     balance: total(row => row.balance),
     labCost: total(row => row.labCost),
     materialCost: total(row => row.materialCost),
+    specialDoctorCost: total(row => row.specialDoctorCost),
     doctorCost: total(row => row.doctorCost),
     totalCost: total(row => row.totalCost),
     netProfit,
@@ -256,8 +261,9 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
     const costs = data.costSummaries[record.id];
     const labCost = positiveMoney(costs?.labTotal);
     const materialCost = positiveMoney(costs?.materialTotal);
+    const specialDoctorCost = positiveMoney(costs?.specialDoctorTotal);
     const doctorCost = positiveMoney(record.doctorEarnings);
-    const totalCost = money(labCost + materialCost + doctorCost);
+    const totalCost = money(labCost + materialCost + specialDoctorCost + doctorCost);
     const netProfit = money(cost - totalCost);
     return {
       treatmentId: record.id,
@@ -278,6 +284,7 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
       balance: money(Math.max(0, cost - payment)),
       labCost,
       materialCost,
+      specialDoctorCost,
       doctorCost,
       totalCost,
       netProfit,

@@ -68,7 +68,7 @@ describe('api.materialCosts transactional RPC', () => {
     });
     expect(result.items.map((item) => item.costType)).toEqual(['material', 'lab']);
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      'Material and lab costs were saved, but doctor commission refresh needs retry.',
+      'Treatment costs were saved, but doctor commission refresh needs retry.',
       expect.any(Error)
     );
   });

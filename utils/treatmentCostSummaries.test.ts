@@ -3,11 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { summarizeTreatmentCostRows } from './treatmentCostSummaries';
 
 describe('treatment cost summaries', () => {
-  it('separates material and lab totals while preserving the combined total', () => {
+  it('separates all treatment cost categories while preserving the combined total', () => {
     const summaries = summarizeTreatmentCostRows([
       { audit_log_id: 'audit-1', cost_type: 'material', total_amount: 12_000 },
       { audit_log_id: 'audit-1', cost_type: 'lab', total_amount: '30,000'.replace(',', '') },
-      { audit_log_id: 'audit-1', cost_type: 'material', total_amount: 8_000 }
+      { audit_log_id: 'audit-1', cost_type: 'material', total_amount: 8_000 },
+      { audit_log_id: 'audit-1', cost_type: 'special_doctor', total_amount: 40_000 }
     ], new Map([['audit-1', 'treatment-1']]));
 
     expect(summaries['treatment-1']).toEqual({
@@ -16,8 +17,10 @@ describe('treatment cost summaries', () => {
       materialItemCount: 2,
       labTotal: 30_000,
       labItemCount: 1,
-      totalAmount: 50_000,
-      itemCount: 3
+      specialDoctorTotal: 40_000,
+      specialDoctorItemCount: 1,
+      totalAmount: 90_000,
+      itemCount: 4
     });
   });
 
@@ -28,6 +31,7 @@ describe('treatment cost summaries', () => {
 
     expect(summaries['treatment-legacy']?.materialTotal).toBe(25_000);
     expect(summaries['treatment-legacy']?.labTotal).toBe(0);
+    expect(summaries['treatment-legacy']?.specialDoctorTotal).toBe(0);
     expect(summaries['treatment-legacy']?.totalAmount).toBe(25_000);
   });
 

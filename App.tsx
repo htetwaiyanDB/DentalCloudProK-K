@@ -4249,7 +4249,7 @@ const App: React.FC = () => {
                <NavItem icon={<Stethoscope size={18} />} label="Service Menu" active={currentView === 'treatments'} onClick={() => { setCurrentView('treatments'); setIsMobileMenuOpen(false); }} />
              )}
              {canAccessView('material-cost') && (
-                <NavItem icon={<Package size={18} />} label="Material & Lab" active={currentView === 'material-cost'} onClick={() => { setCurrentView('material-cost'); setIsMobileMenuOpen(false); }} />
+                <NavItem icon={<Package size={18} />} label="MLS" active={currentView === 'material-cost'} onClick={() => { setCurrentView('material-cost'); setIsMobileMenuOpen(false); }} />
              )}
              {canAccessView('records') && (
                <NavItem icon={<ClipboardList size={18} />} label={isDoctor ? 'Patient Records' : 'Audit Log'} active={currentView === 'records'} onClick={() => { setRecordsInitialFilter('all'); setCurrentView('records'); setIsMobileMenuOpen(false); }} />
@@ -4376,7 +4376,7 @@ const App: React.FC = () => {
                         requireCostTables: true,
                         onProgress: (completed, total) => onProgress({
                           percent: 45 + Math.round((completed / Math.max(total, 1)) * 38),
-                          label: `Loading material & lab costs ${completed}/${total}…`
+                          label: `Loading treatment costs ${completed}/${total}…`
                         })
                       })
                     ]);
@@ -5470,7 +5470,7 @@ const App: React.FC = () => {
                   />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-medium">{usesFlatVisitCommission({ commissionType: newDoctorData.commission_type, specialization: newDoctorData.specialization }) ? getCurrencySymbol(currency) : '%'}</span>
                 </div>
-                <p className="mt-1 text-xs text-gray-400">{usesFlatVisitCommission({ commissionType: newDoctorData.commission_type, specialization: newDoctorData.specialization }) ? 'Fixed amount paid once per patient visit.' : 'Percentage of collected treatment fees after material and lab costs.'}</p>
+                <p className="mt-1 text-xs text-gray-400">{usesFlatVisitCommission({ commissionType: newDoctorData.commission_type, specialization: newDoctorData.specialization }) ? 'Fixed amount paid once per patient visit.' : 'Percentage of collected treatment fees after treatment costs.'}</p>
                 <button
                   type="button"
                   onClick={() => {

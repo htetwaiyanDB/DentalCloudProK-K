@@ -15,12 +15,12 @@ const report: MonthlyReport = {
   rows: [{
     treatmentId: 'treatment-1', date: '2026-07-10', patientId: 'patient-1', patientName: 'Aye Aye', age: 35,
     phone: '0912345', city: 'Yangon', township: 'Bahan', patientType: 'Walk-in', treatment: 'Crown', doctor: 'Doctor One',
-    cost: 100000, payment: 60000, balance: 40000, materialCost: 10000, labCost: 5000, doctorCost: 20000,
+    cost: 100000, payment: 60000, balance: 40000, materialCost: 10000, labCost: 5000, specialDoctorCost: 0, doctorCost: 20000,
     totalCost: 35000, netProfit: 65000, netMargin: 0.65
   }],
   summary: {
     treatmentCount: 1, patientCount: 1, production: 100000, payment: 60000, balance: 40000,
-    materialCost: 10000, labCost: 5000, doctorCost: 20000, totalCost: 35000, netProfit: 65000,
+    materialCost: 10000, labCost: 5000, specialDoctorCost: 0, doctorCost: 20000, totalCost: 35000, netProfit: 65000,
     netMargin: 0.65, collectionRate: 0.6
   },
   byTreatment: [{ name: 'Crown', treatments: 1, patients: 1, production: 100000, payment: 60000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
@@ -67,13 +67,13 @@ describe('monthly report Excel workbook', () => {
     expect(detail.J4.v).toBe('Treatment Production');
     expect(detail.A6.v).toBe('REPORT TOTAL');
     expect(detail.J5.z).toBe('#,##0" Ks"');
-    expect(detail.R5.z).toBe('0.0%');
+    expect(detail.S5.z).toBe('0.0%');
     expect(detail.A4.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: '4F46E5' } },
       border: { left: { style: 'medium' } }
     });
     expect(detail.A5.s).toMatchObject({ border: { bottom: { style: 'thin' } } });
-    expect(detail.Q5.s).toMatchObject({ fill: { fgColor: { rgb: 'DCFCE7' } } });
+    expect(detail.R5.s).toMatchObject({ fill: { fgColor: { rgb: 'DCFCE7' } } });
     expect(detail.B6.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: 'E2E8F0' } },
       border: { top: { style: 'medium' }, bottom: { style: 'medium' } }
@@ -82,7 +82,7 @@ describe('monthly report Excel workbook', () => {
       fill: { patternType: 'solid', fgColor: { rgb: 'E2E8F0' } },
       border: { top: { style: 'medium' } }
     });
-    expect(detail['!autofilter']).toEqual({ ref: 'A4:R5' });
+    expect(detail['!autofilter']).toEqual({ ref: 'A4:S5' });
     expect(detail['!freeze']).toMatchObject({ ySplit: 4, topLeftCell: 'A5' });
     expect(detail['!cols'][7].wch).toBe(32);
 
@@ -102,10 +102,10 @@ describe('monthly report Excel workbook', () => {
     expect(detail.F5.v).toBe('Bahan');
     expect(detail.J5.v).toBe(100000);
     expect(detail.J5.z).toBe('#,##0" Ks"');
-    expect(detail.R5.v).toBe(0.65);
-    expect(detail.R5.z).toBe('0.0%');
+    expect(detail.S5.v).toBe(0.65);
+    expect(detail.S5.z).toBe('0.0%');
     expect(detail.A4.s?.fgColor?.rgb).toBe('4F46E5');
-    expect(detail.Q5.s?.fgColor?.rgb).toBe('DCFCE7');
+    expect(detail.R5.s?.fgColor?.rgb).toBe('DCFCE7');
     expect(detail.A6.v).toBe('REPORT TOTAL');
     expect(reopened.Props?.Title).toBe('Monthly Treatment & Profitability Report');
 
@@ -122,7 +122,7 @@ describe('monthly report Excel workbook', () => {
       rows: [],
       summary: {
         treatmentCount: 0, patientCount: 0, production: 0, payment: 0, balance: 0, materialCost: 0,
-        labCost: 0, doctorCost: 0, totalCost: 0, netProfit: 0, netMargin: 0, collectionRate: 0
+        labCost: 0, specialDoctorCost: 0, doctorCost: 0, totalCost: 0, netProfit: 0, netMargin: 0, collectionRate: 0
       },
       byTreatment: [],
       byDoctor: [],
@@ -135,7 +135,7 @@ describe('monthly report Excel workbook', () => {
     expect(detail.A5.v).toBe('REPORT TOTAL');
     expect(detail.J5.v).toBe(0);
     expect(detail.J5.z).toBe('#,##0" Ks"');
-    expect(detail['!autofilter']).toEqual({ ref: 'A4:R4' });
+    expect(detail['!autofilter']).toEqual({ ref: 'A4:S4' });
   });
 
   it('uses an explicit loss treatment without changing the underlying numeric value', async () => {
@@ -150,8 +150,8 @@ describe('monthly report Excel workbook', () => {
     const workbook = await buildMonthlyReportExcelWorkbook(lossReport, metadata);
     const detail = workbook.Sheets['Treatment Detail'];
 
-    expect(detail.Q5.v).toBe(-5000);
-    expect(detail.Q5.s).toMatchObject({
+    expect(detail.R5.v).toBe(-5000);
+    expect(detail.R5.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: 'FEE2E2' } },
       font: { color: { rgb: 'B91C1C' } }
     });
@@ -169,7 +169,7 @@ describe('monthly report Excel workbook', () => {
       ],
       summary: {
         treatmentCount: 4, patientCount: 1, production: 200000, payment: 100000, balance: 100000,
-        materialCost: 15000, labCost: 10000, doctorCost: 40000, totalCost: 65000, netProfit: 135000,
+        materialCost: 15000, labCost: 10000, specialDoctorCost: 0, doctorCost: 40000, totalCost: 65000, netProfit: 135000,
         netMargin: 0.675, collectionRate: 0.5
       },
       byTreatment: [
@@ -186,10 +186,10 @@ describe('monthly report Excel workbook', () => {
     expect(detail.H5.v).toBe('Crown ×2; Filling; Scaling');
     expect(detail.I5.v).toBe('Doctor One; Doctor Two');
     expect(detail.J5.v).toBe(200000);
-    expect(detail.Q5.v).toBe(135000);
-    expect(detail.R5.v).toBe(0.675);
+    expect(detail.R5.v).toBe(135000);
+    expect(detail.S5.v).toBe(0.675);
     expect(detail.A6.v).toBe('REPORT TOTAL');
-    expect(detail['!autofilter']).toEqual({ ref: 'A4:R5' });
+    expect(detail['!autofilter']).toEqual({ ref: 'A4:S5' });
     expect(byTreatment.A5.v).toBe('Crown');
     expect(byTreatment.B5.v).toBe(2);
     expect(byTreatment.A8.v).toBe('REPORT TOTAL');

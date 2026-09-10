@@ -16,7 +16,7 @@ const payment = (overrides: Partial<PaymentRecord> = {}): PaymentRecord => ({
 
 const costs = (overrides: Partial<TreatmentCostSummary> = {}): TreatmentCostSummary => ({
   auditLogId: 'audit-1', materialTotal: 10, materialItemCount: 1, labTotal: 5, labItemCount: 1,
-  totalAmount: 15, itemCount: 2, ...overrides
+  specialDoctorTotal: 0, specialDoctorItemCount: 0, totalAmount: 15, itemCount: 2, ...overrides
 });
 
 describe('monthly report', () => {
@@ -29,9 +29,9 @@ describe('monthly report', () => {
   });
 
   it('calculates payment, treatment balance, total cost, and production-based net profit', () => {
-    const report = buildMonthlyReport({ records: [record()], payments: [payment()], costSummaries: { 'treatment-1': costs() } });
-    expect(report.rows[0]).toMatchObject({ city: 'Yangon', township: 'Bahan', cost: 100, payment: 60, balance: 40, materialCost: 10, labCost: 5, doctorCost: 20, totalCost: 35, netProfit: 65, netMargin: 0.65 });
-    expect(report.summary).toMatchObject({ treatmentCount: 1, patientCount: 1, production: 100, payment: 60, balance: 40, totalCost: 35, netProfit: 65, collectionRate: 0.6 });
+    const report = buildMonthlyReport({ records: [record()], payments: [payment()], costSummaries: { 'treatment-1': costs({ specialDoctorTotal: 15, specialDoctorItemCount: 1, totalAmount: 30, itemCount: 3 }) } });
+    expect(report.rows[0]).toMatchObject({ city: 'Yangon', township: 'Bahan', cost: 100, payment: 60, balance: 40, materialCost: 10, labCost: 5, specialDoctorCost: 15, doctorCost: 20, totalCost: 50, netProfit: 50, netMargin: 0.5 });
+    expect(report.summary).toMatchObject({ treatmentCount: 1, patientCount: 1, production: 100, payment: 60, balance: 40, specialDoctorCost: 15, totalCost: 50, netProfit: 50, collectionRate: 0.6 });
   });
 
   it('allocates a shared payment proportionally and never overpays a treatment', () => {

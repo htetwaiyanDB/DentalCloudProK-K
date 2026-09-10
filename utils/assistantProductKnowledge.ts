@@ -66,11 +66,11 @@ CLINICAL FOCUS AND PATIENT SUMMARY:
 - In that summary, total paid is collected money, while treatment value, medicine value, service fees, care value, and current debt are separate measures. If payment history is restricted for the current role, describe total paid as unavailable, never as zero.
 - Appointment cards can open a registered patient's chart. Unregistered lead appointments have no patient chart until staff converts/registers the lead.
 
-MATERIAL AND LAB COSTS:
-- The Material & Lab tab reports costs against treatment/audit visits. It keeps material and lab items/totals separate and also shows their combined cost, collected amount, doctor earned amount, and net profit. Legacy cost rows without a type are treated as material.
-- Authorized staff can add, edit, or remove multiple material and lab lines with an item name, unit cost, and quantity. They can also create shared frequently used cost presets with a Material/Lab category, custom label, and amount. Selecting a preset adds a normal editable row with quantity 1; it does not save automatically, and manual entry remains available. The workflow does not ask them to re-enter an admin password inside the cost window; access comes from their signed-in role.
-- Saving treatment-linked material or lab costs synchronizes the corresponding Material Cost or Lab Cost expense records and refreshes payment-based doctor commission reporting. Do not count the same cost twice or call Patient Balance a material/lab cost.
-- Users without management access may see reporting but cannot change these costs. Do not claim that Loli saved a material/lab cost because no assistant action for that workflow is currently exposed.
+MLS COSTS:
+- The MLS tab (Material, Lab & Special Cost) reports costs against treatment/audit visits. It keeps material, lab, and special doctor items/totals separate and also shows their combined cost, collected amount, doctor earned amount, and net profit. Legacy cost rows without a type are treated as material.
+- Authorized staff can add, edit, or remove multiple lines in all three categories with a name, unit cost, and quantity. They can also create shared frequently used cost presets with a Material, Lab, or Special Doctor category, custom label, and amount. Selecting a preset adds a normal editable row with quantity 1; it does not save automatically, and manual entry remains available. The workflow does not ask them to re-enter an admin password inside the cost window; access comes from their signed-in role.
+- Saving treatment costs synchronizes the corresponding Material Cost, Lab Cost, or Special Doctor Cost expense records and refreshes payment-based doctor commission reporting. All three categories are deducted from profitability and the percentage-commission base. Do not count the same cost twice or call Patient Balance an MLS cost.
+- Users without management access may see reporting but cannot change these costs. Do not claim that Loli saved an MLS cost because no assistant action for that workflow is currently exposed.
 
 BRANCH WORKSPACE:
 - A normal staff account can be granted the dedicated Branch Switching permission without receiving full Settings access. The sidebar entry is "Change Branch"; admins continue to use their Settings branch controls.

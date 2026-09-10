@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowDown, ArrowUp, Beaker, Loader2, Package, Plus, Save, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Loader2, Plus, Save, Trash2 } from 'lucide-react';
 import type { MaterialLabCostPreset, MaterialLabCostPresetInput, TreatmentCostType } from '../types';
 import { createPresetId, normalizeMaterialCostPresetInputs } from '../utils/materialCostPresets';
 import { type Currency } from '../utils/currency';
@@ -80,7 +80,7 @@ const MaterialCostPresetManager: React.FC<MaterialCostPresetManagerProps> = ({
   return <Modal title="Manage Cost Presets" onClose={onClose} closeDisabled={saving} maxWidthClassName="max-w-4xl">
     <form onSubmit={handleSubmit} className="space-y-5">
       <div className="rounded-2xl border border-[var(--hover-100)] bg-[var(--hover-50)] px-4 py-3 text-sm text-[var(--hover-800)]">
-        Create frequently used Material or Lab costs. Presets fill an editable cost row with quantity 1; they never save a treatment automatically.
+        Create frequently used treatment costs. Presets fill an editable cost row with quantity 1; they never save a treatment automatically.
       </div>
 
       <div className="space-y-3">
@@ -89,17 +89,19 @@ const MaterialCostPresetManager: React.FC<MaterialCostPresetManagerProps> = ({
           <p className="mt-1 text-xs text-slate-500">Add your first frequently used cost.</p>
         </div> : drafts.map((preset, index) => {
           const lab = preset.costType === 'lab';
+          const specialDoctor = preset.costType === 'special_doctor';
           return <div key={preset.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[140px_minmax(0,1fr)_150px_148px] sm:items-end">
             <label className="block">
               <span className="mb-1.5 block text-[10px] font-black uppercase tracking-wider text-slate-500">Category</span>
               <select value={preset.costType} onChange={(event) => updateDraft(preset.id, { costType: event.target.value as TreatmentCostType })} disabled={saving} className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-[var(--hover-500)] focus:ring-4 focus:ring-[var(--hover-100)] disabled:bg-slate-100">
                 <option value="material">Material</option>
                 <option value="lab">Lab</option>
+                <option value="special_doctor">Special Doctor</option>
               </select>
             </label>
             <label className="block">
               <span className="mb-1.5 block text-[10px] font-black uppercase tracking-wider text-slate-500">Button label</span>
-              <input value={preset.label} maxLength={255} onChange={(event) => updateDraft(preset.id, { label: event.target.value })} disabled={saving} placeholder={lab ? 'e.g. Crown Lab' : 'e.g. Composite'} className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-[var(--hover-500)] focus:ring-4 focus:ring-[var(--hover-100)] disabled:bg-slate-100" />
+              <input value={preset.label} maxLength={255} onChange={(event) => updateDraft(preset.id, { label: event.target.value })} disabled={saving} placeholder={lab ? 'e.g. Crown Lab' : specialDoctor ? 'e.g. Visiting Specialist' : 'e.g. Composite'} className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-[var(--hover-500)] focus:ring-4 focus:ring-[var(--hover-100)] disabled:bg-slate-100" />
             </label>
             <label className="block">
               <span className="mb-1.5 block text-[10px] font-black uppercase tracking-wider text-slate-500">Amount ({currencyLabel})</span>

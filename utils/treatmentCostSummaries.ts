@@ -13,7 +13,9 @@ export const summarizeTreatmentCostRows = (
   const treatmentId = sourceByAuditId.get(row.audit_log_id);
   if (!treatmentId) return summary;
 
-  const costType: TreatmentCostType = row.cost_type === 'lab' ? 'lab' : 'material';
+  const costType: TreatmentCostType = row.cost_type === 'lab'
+    ? 'lab'
+    : row.cost_type === 'special_doctor' ? 'special_doctor' : 'material';
   const amount = Math.max(0, Number(row.total_amount || 0));
   const existing = summary[treatmentId] || {
     auditLogId: row.audit_log_id,
@@ -21,6 +23,8 @@ export const summarizeTreatmentCostRows = (
     materialItemCount: 0,
     labTotal: 0,
     labItemCount: 0,
+    specialDoctorTotal: 0,
+    specialDoctorItemCount: 0,
     totalAmount: 0,
     itemCount: 0
   };
@@ -28,6 +32,9 @@ export const summarizeTreatmentCostRows = (
   if (costType === 'lab') {
     existing.labTotal += amount;
     existing.labItemCount += 1;
+  } else if (costType === 'special_doctor') {
+    existing.specialDoctorTotal += amount;
+    existing.specialDoctorItemCount += 1;
   } else {
     existing.materialTotal += amount;
     existing.materialItemCount += 1;

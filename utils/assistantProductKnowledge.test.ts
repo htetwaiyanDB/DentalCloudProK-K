@@ -74,12 +74,13 @@ describe('assistant product knowledge', () => {
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('Unregistered lead appointments have no patient chart');
   });
 
-  it('documents material, lab, and branch permission workflows', () => {
-    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('keeps material and lab items/totals separate');
+  it('documents MLS cost and branch permission workflows', () => {
+    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('MLS tab (Material, Lab & Special Cost)');
+    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('keeps material, lab, and special doctor items/totals separate');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('does not ask them to re-enter an admin password');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('shared frequently used cost presets');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('does not save automatically');
-    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('Material Cost or Lab Cost expense records');
+    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('Material Cost, Lab Cost, or Special Doctor Cost expense records');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('dedicated Branch Switching permission without receiving full Settings access');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('previous branch remains active');
   });
