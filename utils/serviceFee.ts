@@ -19,3 +19,19 @@ export const hasRecordedServiceFeeForVisit = (
   && payment.date === visitDate
   && getPaymentServiceFeeAmount(payment) > 0
 ));
+
+/** Returns the automatic suggestion only; staff may still enter a manual fee. */
+export const getSuggestedServiceFeeAmount = ({
+  enabled,
+  configuredAmount,
+  hasRecordedFeeForVisit
+}: {
+  enabled: boolean;
+  configuredAmount: number;
+  hasRecordedFeeForVisit: boolean;
+}): number => {
+  if (!enabled || hasRecordedFeeForVisit) return 0;
+
+  const amount = Number(configuredAmount);
+  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+};

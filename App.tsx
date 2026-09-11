@@ -81,7 +81,7 @@ import { dataCache } from './utils/dataCache';
 import type { SelectedMedicineCharge } from './components/MedicineSelectionModal';
 import { formatPaymentAllocations, formatPaymentMethod, getPaymentAllocationTotal, getPaymentHeaderMethod, isSelectablePaymentMethod, normalizePaymentAllocations, normalizePaymentMethod, PAYMENT_METHOD_OPTIONS, validatePaymentAllocations } from './utils/paymentMethods';
 import { buildLegacyPaymentReceiptSnapshot, buildPaymentReceiptSnapshot, getUncapturedMedicineSalesForReceipt, mergeTreatmentRecordsById, normalizePaymentReceiptSnapshot, removePatientTreatmentRecords, removeTreatmentRecordById } from './utils/paymentReceipt';
-import { hasRecordedServiceFeeForVisit } from './utils/serviceFee';
+import { getSuggestedServiceFeeAmount, hasRecordedServiceFeeForVisit } from './utils/serviceFee';
 import { getPaymentDedupeKey } from './utils/paymentTreatmentAllocation';
 import { validateAuthoritativePaymentTreatments } from './utils/paymentTreatmentValidation';
 import { toLocalDateInputValue } from './utils/patientCreationDate';
@@ -133,6 +133,7 @@ type PaymentDraft = {
 type PaymentServiceFeePreview = {
   category: 'NEW' | 'RETURNING';
   feeAmount: number;
+  hasSuggestedFee: boolean;
 } | null;
 
 type AppointmentDraft = Partial<Appointment> & {
@@ -2560,18 +2561,11 @@ const App: React.FC = () => {
   };
 
   const resolvePaymentServiceFeePreview = (): PaymentServiceFeePreview => {
-    const shouldApplyServiceFee = clinicalFeeEnabled
-      && (clinicalFeeNewPatientAmount > 0 || clinicalFeeReturningPatientAmount > 0);
-
-    if (!shouldApplyServiceFee || !selectedPatient?.id) {
+    if (!selectedPatient?.id) {
       return null;
     }
 
     const today = toLocalISODate(new Date());
-    if (hasRecordedServiceFeeForVisit(paymentRecords, selectedPatient.id, today)) {
-      return null;
-    }
-
     const hasPreviousCompletedAppointment = appointments.some((appointment) => {
       const patientId = (appointment.patient_id || '').trim();
       return (
@@ -2592,12 +2586,18 @@ const App: React.FC = () => {
     const feeAmount = category === 'RETURNING'
       ? Math.max(0, clinicalFeeReturningPatientAmount)
       : Math.max(0, clinicalFeeNewPatientAmount);
+    const suggestedFeeAmount = getSuggestedServiceFeeAmount({
+      enabled: clinicalFeeEnabled,
+      configuredAmount: feeAmount,
+      hasRecordedFeeForVisit: hasRecordedServiceFeeForVisit(paymentRecords, selectedPatient.id, today)
+    });
+    const hasSuggestedFee = suggestedFeeAmount > 0;
 
-    if (feeAmount <= 0) {
-      return null;
-    }
-
-    return { category, feeAmount };
+    return {
+      category,
+      feeAmount: suggestedFeeAmount,
+      hasSuggestedFee
+    };
   };
 
   const handleOpenPaymentModal = (_treatments: ClinicalRecord[]) => {
@@ -2622,14 +2622,11 @@ const App: React.FC = () => {
     }
 
     const preview = resolvePaymentServiceFeePreview();
-    if (!preview) {
-      alert('Patient service fee is not enabled or the configured fee amount is 0. Please update the Patient Service Fee settings first.');
-      return;
+    if (preview) {
+      setPaymentServiceFeePreview(preview);
+      setManualServiceFeeAmount(String(preview.feeAmount));
+      setShowPaymentCategoryModal(true);
     }
-
-    setPaymentServiceFeePreview(preview);
-    setManualServiceFeeAmount(String(preview.feeAmount));
-    setShowPaymentCategoryModal(true);
   };
 
   const resetAppointmentForm = () => {
@@ -6113,15 +6110,19 @@ const App: React.FC = () => {
 
               <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-5 text-left shadow-sm">
                 <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-700">
-                  {paymentServiceFeePreview?.category === 'RETURNING' ? 'Old Patient' : 'New Patient'}
+                  {paymentServiceFeePreview?.hasSuggestedFee
+                    ? paymentServiceFeePreview.category === 'RETURNING' ? 'Old Patient' : 'New Patient'
+                    : 'Manual fee entry'}
                 </p>
                 <p className="mt-2 text-3xl font-black text-slate-950">
                   {formatCurrency(paymentServiceFeePreview?.feeAmount || 0, currency)}
                 </p>
                 <p className="mt-2 text-sm text-slate-600">
-                  {paymentServiceFeePreview?.category === 'RETURNING'
-                    ? 'A previous completed visit or treatment was found, so the old-patient service fee will be added.'
-                    : 'No previous completed visit or treatment was found, so the new-patient service fee will be added.'}
+                  {paymentServiceFeePreview?.hasSuggestedFee
+                    ? paymentServiceFeePreview.category === 'RETURNING'
+                      ? 'A previous completed visit or treatment was found, so the old-patient service fee is suggested.'
+                      : 'No previous completed visit or treatment was found, so the new-patient service fee is suggested.'
+                    : 'No automatic service fee is suggested. Enter a manual amount only when an additional charge is required.'}
                 </p>
               </div>
 
@@ -6144,13 +6145,15 @@ const App: React.FC = () => {
                     className="min-w-0 flex-1 rounded-xl border border-amber-300 bg-white px-4 py-3 text-lg font-bold text-slate-950 outline-none transition focus:border-amber-500 focus:ring-4 focus:ring-amber-100"
                     aria-describedby="manual-service-fee-help"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setManualServiceFeeAmount(String(paymentServiceFeePreview?.feeAmount || 0))}
-                    className="rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm font-bold text-amber-900 transition hover:bg-amber-100"
-                  >
-                    Use default
-                  </button>
+                  {paymentServiceFeePreview?.hasSuggestedFee ? (
+                    <button
+                      type="button"
+                      onClick={() => setManualServiceFeeAmount(String(paymentServiceFeePreview.feeAmount))}
+                      className="rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm font-bold text-amber-900 transition hover:bg-amber-100"
+                    >
+                      Use default
+                    </button>
+                  ) : null}
                 </div>
                 <p id="manual-service-fee-help" className="mt-2 text-xs font-semibold text-amber-800">
                   Enter 0 to waive the fee, a lower amount for hardship, or a higher amount for an additional charge.
@@ -6159,7 +6162,7 @@ const App: React.FC = () => {
             </div>
 
             <div className="px-8 pb-8 space-y-3">
-              {paymentServiceFeePreview?.category === 'RETURNING' ? (
+              {paymentServiceFeePreview?.hasSuggestedFee && paymentServiceFeePreview.category === 'RETURNING' ? (
                 <>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {Math.max(0, clinicalFeeNewPatientAmount) > 0 ? (
@@ -6202,7 +6205,7 @@ const App: React.FC = () => {
                     Continue Without Service Fee
                   </button>
                 </>
-              ) : (
+              ) : paymentServiceFeePreview?.hasSuggestedFee ? (
                 <div className="flex gap-3">
                   <button
                     type="button"
@@ -6230,7 +6233,7 @@ const App: React.FC = () => {
                     Continue With This Fee
                   </button>
                 </div>
-              )}
+              ) : null}
               <button
                 type="button"
                 onClick={() => {

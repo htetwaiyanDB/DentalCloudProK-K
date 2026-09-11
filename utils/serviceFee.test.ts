@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PaymentRecord } from '../types';
-import { hasRecordedServiceFeeForVisit } from './serviceFee';
+import { getSuggestedServiceFeeAmount, hasRecordedServiceFeeForVisit } from './serviceFee';
 
 const payment = (overrides: Partial<PaymentRecord> = {}): PaymentRecord => ({
   id: 'payment-1',
@@ -43,5 +43,16 @@ describe('patient service fee visit checks', () => {
     expect(hasRecordedServiceFeeForVisit([
       payment({ amount: 0, clearedAmount: 0, voidedAt: '2026-07-16T09:30:00Z', voidedAmount: 10_000 })
     ], 'patient-1', '2026-07-16')).toBe(false);
+  });
+});
+
+describe('automatic patient service-fee suggestions', () => {
+  it.each([
+    { enabled: true, configuredAmount: 5_000, hasRecordedFeeForVisit: false, expected: 5_000 },
+    { enabled: false, configuredAmount: 5_000, hasRecordedFeeForVisit: false, expected: 0 },
+    { enabled: true, configuredAmount: 0, hasRecordedFeeForVisit: false, expected: 0 },
+    { enabled: true, configuredAmount: 5_000, hasRecordedFeeForVisit: true, expected: 0 }
+  ])('returns $expected when enabled=$enabled, configuredAmount=$configuredAmount, and prior fee=$hasRecordedFeeForVisit', ({ expected, ...params }) => {
+    expect(getSuggestedServiceFeeAmount(params)).toBe(expected);
   });
 });
