@@ -499,6 +499,7 @@ const App: React.FC = () => {
   const [splitPaymentsAvailable, setSplitPaymentsAvailable] = useState(false);
   const [showPaymentCategoryModal, setShowPaymentCategoryModal] = useState(false);
   const [paymentServiceFeePreview, setPaymentServiceFeePreview] = useState<PaymentServiceFeePreview>(null);
+  const [manualServiceFeeAmount, setManualServiceFeeAmount] = useState('');
   const [showPatientModal, setShowPatientModal] = useState(false);
   const [showAppointmentModal, setShowAppointmentModal] = useState(false);
   const [showTreatmentTypeModal, setShowTreatmentTypeModal] = useState(false);
@@ -2604,6 +2605,7 @@ const App: React.FC = () => {
 
     if (preview) {
       setPaymentServiceFeePreview(preview);
+      setManualServiceFeeAmount(String(preview.feeAmount));
       setShowPaymentCategoryModal(true);
       return;
     }
@@ -2626,6 +2628,7 @@ const App: React.FC = () => {
     }
 
     setPaymentServiceFeePreview(preview);
+    setManualServiceFeeAmount(String(preview.feeAmount));
     setShowPaymentCategoryModal(true);
   };
 
@@ -6076,6 +6079,7 @@ const App: React.FC = () => {
               onClick={() => {
                 setShowPaymentCategoryModal(false);
                 setPaymentServiceFeePreview(null);
+                setManualServiceFeeAmount('');
               }}
               className="absolute right-6 top-6 text-gray-300 transition-colors hover:text-gray-900"
             >
@@ -6120,6 +6124,38 @@ const App: React.FC = () => {
                     : 'No previous completed visit or treatment was found, so the new-patient service fee will be added.'}
                 </p>
               </div>
+
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-left">
+                <label htmlFor="manual-service-fee" className="block text-sm font-black text-amber-900">
+                  Manual service fee for this patient
+                </label>
+                <p className="mt-1 text-xs font-medium leading-relaxed text-amber-800">
+                  Optional. This changes only this payment; clinic service-fee settings and future patients are not changed.
+                </p>
+                <div className="mt-3 flex items-center gap-3">
+                  <input
+                    id="manual-service-fee"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={manualServiceFeeAmount}
+                    onChange={(event) => setManualServiceFeeAmount(event.target.value)}
+                    className="min-w-0 flex-1 rounded-xl border border-amber-300 bg-white px-4 py-3 text-lg font-bold text-slate-950 outline-none transition focus:border-amber-500 focus:ring-4 focus:ring-amber-100"
+                    aria-describedby="manual-service-fee-help"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setManualServiceFeeAmount(String(paymentServiceFeePreview?.feeAmount || 0))}
+                    className="rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm font-bold text-amber-900 transition hover:bg-amber-100"
+                  >
+                    Use default
+                  </button>
+                </div>
+                <p id="manual-service-fee-help" className="mt-2 text-xs font-semibold text-amber-800">
+                  Enter 0 to waive the fee, a lower amount for hardship, or a higher amount for an additional charge.
+                </p>
+              </div>
             </div>
 
             <div className="px-8 pb-8 space-y-3">
@@ -6158,6 +6194,7 @@ const App: React.FC = () => {
                     onClick={() => {
                       setShowPaymentCategoryModal(false);
                       setPaymentServiceFeePreview(null);
+                      setManualServiceFeeAmount('');
                       openPaymentModalWithCategory(null, 0);
                     }}
                     className="w-full px-6 py-3.5 rounded-xl font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 hover:text-gray-700 transition-all active:scale-[0.98]"
@@ -6172,6 +6209,7 @@ const App: React.FC = () => {
                     onClick={() => {
                       setShowPaymentCategoryModal(false);
                       setPaymentServiceFeePreview(null);
+                      setManualServiceFeeAmount('');
                       openPaymentModalWithCategory(null, 0);
                     }}
                     className="flex-1 px-6 py-3.5 rounded-xl font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 hover:text-gray-700 transition-all active:scale-[0.98]"
@@ -6184,14 +6222,33 @@ const App: React.FC = () => {
                       const preview = paymentServiceFeePreview;
                       setShowPaymentCategoryModal(false);
                       setPaymentServiceFeePreview(null);
+                      setManualServiceFeeAmount('');
                       openPaymentModalWithCategory(preview?.category || null, preview?.feeAmount || 0);
                     }}
                     className="flex-1 px-6 py-3.5 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-600/25 transition-all active:scale-[0.98]"
                   >
-                    Continue With Service Fee
+                    Continue With This Fee
                   </button>
                 </div>
               )}
+              <button
+                type="button"
+                onClick={() => {
+                  const preview = paymentServiceFeePreview;
+                  const enteredFeeAmount = Number(manualServiceFeeAmount);
+                  if (!Number.isFinite(enteredFeeAmount) || enteredFeeAmount < 0) {
+                    alert('Manual service fee must be a valid amount of 0 or more.');
+                    return;
+                  }
+                  setShowPaymentCategoryModal(false);
+                  setPaymentServiceFeePreview(null);
+                  setManualServiceFeeAmount('');
+                  openPaymentModalWithCategory(preview?.category || null, enteredFeeAmount);
+                }}
+                className="w-full rounded-xl bg-amber-600 px-6 py-3.5 font-bold text-white shadow-lg shadow-amber-600/20 transition-all hover:bg-amber-700 active:scale-[0.98]"
+              >
+                Continue With Manual Fee
+              </button>
             </div>
           </div>
         </div>
