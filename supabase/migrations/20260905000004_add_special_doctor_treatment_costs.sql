@@ -62,7 +62,6 @@ AS $$
 DECLARE
   v_material_total NUMERIC(12,2);
   v_lab_total NUMERIC(12,2);
-  v_special_doctor_total NUMERIC(12,2);
   v_actor_username TEXT;
   v_location_id UUID;
   v_treatment_date DATE;
@@ -71,7 +70,6 @@ DECLARE
   v_treatment_label TEXT;
   v_material_names TEXT;
   v_lab_names TEXT;
-  v_special_doctor_names TEXT;
 BEGIN
   SELECT t.location_id, t.date, t.patient_id, COALESCE(p.name, 'Unknown patient'), COALESCE(t.description, 'Treatment')
   INTO v_location_id, v_treatment_date, v_patient_id, v_patient_name, v_treatment_label
@@ -127,12 +125,9 @@ BEGIN
   SELECT
     COALESCE(SUM(total_amount) FILTER (WHERE cost_type = 'material'), 0),
     COALESCE(SUM(total_amount) FILTER (WHERE cost_type = 'lab'), 0),
-    COALESCE(SUM(total_amount) FILTER (WHERE cost_type = 'special_doctor'), 0),
     COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'material'), ''),
-    COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'lab'), ''),
-    COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'special_doctor'), '')
-  INTO v_material_total, v_lab_total, v_special_doctor_total,
-    v_material_names, v_lab_names, v_special_doctor_names
+    COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'lab'), '')
+  INTO v_material_total, v_lab_total, v_material_names, v_lab_names
   FROM public.patient_material_costs WHERE audit_log_id = p_audit_log_id;
 
   DELETE FROM public.expenses
@@ -146,11 +141,6 @@ BEGIN
     INSERT INTO public.expenses (location_id, description, amount, category, date, source_type, source_id, is_system_generated)
     VALUES (v_location_id, 'Lab cost - ' || v_patient_name || ' - ' || v_treatment_label || CASE WHEN v_lab_names <> '' THEN ' (' || v_lab_names || ')' ELSE '' END, v_lab_total, 'Lab Cost', v_treatment_date, 'lab_cost', p_audit_log_id, true);
   END IF;
-  IF v_special_doctor_total > 0 THEN
-    INSERT INTO public.expenses (location_id, description, amount, category, date, source_type, source_id, is_system_generated)
-    VALUES (v_location_id, 'Special doctor cost - ' || v_patient_name || ' - ' || v_treatment_label || CASE WHEN v_special_doctor_names <> '' THEN ' (' || v_special_doctor_names || ')' ELSE '' END, v_special_doctor_total, 'Special Doctor Cost', v_treatment_date, 'special_doctor_cost', p_audit_log_id, true);
-  END IF;
-
   INSERT INTO public.pending_commission_recalculations (patient_id, request_token, requested_at)
   VALUES (v_patient_id, p_request_token, NOW())
   ON CONFLICT (patient_id) DO UPDATE

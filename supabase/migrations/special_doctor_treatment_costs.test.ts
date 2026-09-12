@@ -19,11 +19,10 @@ describe('Special Doctor treatment costs migration', () => {
     expect(sql).toMatch(/NOTIFY pgrst, 'reload schema';\s*COMMIT;/);
   });
 
-  it('accepts, totals, and synchronizes the special doctor category', () => {
-    expect(sql.match(/'special_doctor'/g)?.length).toBeGreaterThan(5);
-    expect(sql).toContain("FILTER (WHERE cost_type = 'special_doctor')");
-    expect(sql).toContain("'Special Doctor Cost'");
-    expect(sql).toContain("'special_doctor_cost'");
+  it('accepts the special doctor category without synchronizing it to expenses', () => {
+    expect(sql.match(/'special_doctor'/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(sql).not.toContain('IF v_special_doctor_total > 0');
+    expect(sql).not.toContain("'Special Doctor Cost', v_treatment_date");
     expect(sql).toContain("source_type IN ('material_cost', 'lab_cost', 'special_doctor_cost')");
   });
 

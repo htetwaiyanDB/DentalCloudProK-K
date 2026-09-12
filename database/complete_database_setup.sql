@@ -630,7 +630,7 @@ CREATE TABLE patient_material_costs (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   audit_log_id UUID NOT NULL REFERENCES audit_logs(id) ON DELETE CASCADE,
   material_name VARCHAR(255) NOT NULL,
-  cost_type VARCHAR(20) NOT NULL DEFAULT 'material' CHECK (cost_type IN ('material', 'lab')),
+  cost_type VARCHAR(20) NOT NULL DEFAULT 'material' CHECK (cost_type IN ('material', 'lab', 'special_doctor')),
   cost_amount DECIMAL(12,2) NOT NULL CHECK (cost_amount >= 0),
   quantity DECIMAL(12,2) NOT NULL DEFAULT 1 CHECK (quantity > 0),
   total_amount DECIMAL(12,2) GENERATED ALWAYS AS (cost_amount * quantity) STORED,
@@ -667,7 +667,7 @@ CREATE TABLE material_lab_cost_preset_settings (
 
 CREATE TABLE material_lab_cost_presets (
   id UUID PRIMARY KEY,
-  cost_type VARCHAR(20) NOT NULL CHECK (cost_type IN ('material', 'lab')),
+  cost_type VARCHAR(20) NOT NULL CHECK (cost_type IN ('material', 'lab', 'special_doctor')),
   label VARCHAR(255) NOT NULL CHECK (btrim(label) <> ''),
   amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
   sort_order INTEGER NOT NULL UNIQUE CHECK (sort_order >= 0 AND sort_order < 100),
@@ -1560,7 +1560,7 @@ CREATE OR REPLACE FUNCTION delete_audit_log_material_expense()
 RETURNS TRIGGER AS $$
 BEGIN
   DELETE FROM expenses
-  WHERE source_type IN ('material_cost', 'lab_cost')
+  WHERE source_type IN ('material_cost', 'lab_cost', 'special_doctor_cost')
     AND source_id = OLD.id;
   RETURN OLD;
 END;
@@ -1619,18 +1619,21 @@ BEGIN
   IF p_items IS NULL OR jsonb_typeof(p_items) <> 'array' THEN RAISE EXCEPTION 'Cost items must be a JSON array.'; END IF;
   IF EXISTS (
     SELECT 1 FROM jsonb_to_recordset(p_items) AS item(material_name TEXT, cost_type TEXT, cost_amount NUMERIC, quantity NUMERIC)
-    WHERE btrim(COALESCE(item.material_name, '')) = '' OR item.cost_type NOT IN ('material', 'lab')
+    WHERE btrim(COALESCE(item.material_name, '')) = '' OR item.cost_type NOT IN ('material', 'lab', 'special_doctor')
       OR item.cost_amount IS NULL OR item.cost_amount <= 0 OR item.quantity IS NULL OR item.quantity <= 0
   ) THEN RAISE EXCEPTION 'Every cost item requires a valid name, type, positive cost, and positive quantity.'; END IF;
   DELETE FROM patient_material_costs WHERE audit_log_id = p_audit_log_id;
   INSERT INTO patient_material_costs (audit_log_id, material_name, cost_type, cost_amount, quantity, created_by, created_by_name)
   SELECT p_audit_log_id, btrim(item.material_name), item.cost_type, item.cost_amount, item.quantity, p_admin_user_id, v_admin_username
   FROM jsonb_to_recordset(p_items) AS item(material_name TEXT, cost_type TEXT, cost_amount NUMERIC, quantity NUMERIC);
-  SELECT COALESCE(SUM(total_amount) FILTER (WHERE cost_type = 'material'), 0), COALESCE(SUM(total_amount) FILTER (WHERE cost_type = 'lab'), 0)
-  INTO v_material_total, v_lab_total FROM patient_material_costs WHERE audit_log_id = p_audit_log_id;
-  SELECT COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'material'), ''), COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'lab'), '')
-  INTO v_material_names, v_lab_names FROM patient_material_costs WHERE audit_log_id = p_audit_log_id;
-  DELETE FROM expenses WHERE source_id = p_audit_log_id AND source_type IN ('material_cost', 'lab_cost');
+  SELECT
+    COALESCE(SUM(total_amount) FILTER (WHERE cost_type = 'material'), 0),
+    COALESCE(SUM(total_amount) FILTER (WHERE cost_type = 'lab'), 0),
+    COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'material'), ''),
+    COALESCE(string_agg(material_name, ', ' ORDER BY created_at) FILTER (WHERE cost_type = 'lab'), '')
+  INTO v_material_total, v_lab_total, v_material_names, v_lab_names
+  FROM patient_material_costs WHERE audit_log_id = p_audit_log_id;
+  DELETE FROM expenses WHERE source_id = p_audit_log_id AND source_type IN ('material_cost', 'lab_cost', 'special_doctor_cost');
   IF v_material_total > 0 THEN
     INSERT INTO expenses (location_id, description, amount, category, date, source_type, source_id, is_system_generated)
     VALUES (v_location_id, 'Material cost - ' || v_patient_name || ' - ' || v_treatment_label || CASE WHEN v_material_names <> '' THEN ' (' || v_material_names || ')' ELSE '' END, v_material_total, 'Material Cost', v_treatment_date, 'material_cost', p_audit_log_id, true);
@@ -1747,7 +1750,7 @@ BEGIN
   THEN RAISE EXCEPTION 'Every preset must be an object.'; END IF;
   IF EXISTS (
     SELECT 1 FROM jsonb_to_recordset(p_items) item(id UUID, cost_type TEXT, label TEXT, amount NUMERIC, sort_order INTEGER)
-    WHERE item.id IS NULL OR item.cost_type NOT IN ('material', 'lab')
+    WHERE item.id IS NULL OR item.cost_type NOT IN ('material', 'lab', 'special_doctor')
       OR btrim(COALESCE(item.label, '')) = '' OR char_length(btrim(item.label)) > 255
       OR item.amount IS NULL OR item.amount <= 0 OR item.amount > 9999999999.99
       OR item.sort_order IS NULL OR item.sort_order < 0 OR item.sort_order >= 100

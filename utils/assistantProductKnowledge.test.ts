@@ -80,7 +80,7 @@ describe('assistant product knowledge', () => {
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('does not ask them to re-enter an admin password');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('shared frequently used cost presets');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('does not save automatically');
-    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('Material Cost, Lab Cost, or Special Doctor Cost expense records');
+    expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('Special Doctor Cost stays in MLS and is not added to Expenses automatically');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('dedicated Branch Switching permission without receiving full Settings access');
     expect(ASSISTANT_PRODUCT_KNOWLEDGE).toContain('previous branch remains active');
   });

@@ -806,7 +806,7 @@ const fetchSyntheticMaterialCostExpenses = async (
 
     const resolvedLocationId = auditRow.location_id || treatment.location_id || null;
     if (locationId && resolvedLocationId !== locationId) return [];
-    return (['material', 'lab', 'special_doctor'] as TreatmentCostType[]).flatMap((costType): Expense[] => {
+    return (['material', 'lab'] as TreatmentCostType[]).flatMap((costType): Expense[] => {
       const summary = costSummaryByAuditAndType.get(`${auditRow.id}|${costType}`);
       if (!summary || summary.totalAmount <= 0) return [];
       const metadata = getTreatmentCostExpenseMetadata(costType);
