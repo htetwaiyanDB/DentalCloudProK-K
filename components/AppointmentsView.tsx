@@ -1215,8 +1215,10 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                   <div className="space-y-1.5 md:space-y-2">
                     {selectedDayAppointments.map((appointment) => {
                       const clinicalPlan = parseAppointmentClinicalFocus(appointment.notes);
+                      const patient = getPatientForAppointment(appointment);
+                      const patientNote = patient?.medicalHistory?.trim();
                       return (
-                        <div key={appointment.id} className="flex flex-col md:flex-row md:items-center justify-between p-2 md:p-3 border border-gray-200 rounded-lg gap-2 md:gap-0">
+                        <div key={appointment.id} className="flex flex-col md:flex-row md:items-center justify-between p-2 md:p-3 border border-gray-200 rounded-lg gap-2 md:gap-4">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-1.5 md:gap-2 text-xs md:text-sm font-medium text-gray-900">
                               {renderPatientName(appointment, 'truncate')}
@@ -1237,6 +1239,16 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                               </div>
                             )}
                           </div>
+                          {patientNote && (
+                            <span
+                              role="alert"
+                              className="inline-flex max-w-full flex-shrink-0 items-center gap-1 text-[11px] font-semibold leading-4 text-amber-700 md:ml-2 md:mr-10"
+                              title={patientNote}
+                            >
+                              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                              <span className="max-w-56 truncate">Note - {patientNote}</span>
+                            </span>
+                          )}
                           <div className="flex flex-wrap items-center gap-1.5 md:gap-2 flex-shrink-0">
                             {renderAppointmentActionButtons(appointment, true)}
                             {isNewPatientAppointment(appointment) && onConvertLead ? (

@@ -44,12 +44,13 @@ export const getPaymentTreatmentShare = (payment: PaymentRecord): number => {
     0
   );
   const serviceFee = positiveMoney(snapshot.payment.serviceFeeAmount);
-  const hasPricedReceiptLines = treatmentValue + medicineValue > 0;
+  const availableAfterNonTreatmentCharges = Math.max(0, collected - serviceFee - medicineValue);
 
-  // A populated receipt snapshot is the immutable source of truth for mixed
-  // receipts. Legacy/partial snapshots without priced lines retain the older
-  // service-fee-only fallback instead of making the whole payment disappear.
-  return hasPricedReceiptLines
-    ? roundMoney(Math.min(treatmentValue, Math.max(0, collected - serviceFee - medicineValue)))
-    : roundMoney(Math.max(0, collected - serviceFee));
+  // Explicit treatment lines cap the commissionable share. Some legacy mixed
+  // receipts saved medicine lines but omitted their treatment lines; in that
+  // case the amount left after medicines and service fees is still the paid
+  // treatment balance. A medicine-only receipt naturally leaves zero here.
+  return treatmentValue > 0
+    ? roundMoney(Math.min(treatmentValue, availableAfterNonTreatmentCharges))
+    : roundMoney(availableAfterNonTreatmentCharges);
 };

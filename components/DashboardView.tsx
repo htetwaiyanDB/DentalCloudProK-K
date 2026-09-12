@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { DollarSign, Activity, Users, Calendar as CalendarIcon, PieChart as PieIcon, MapPin, TrendingDown, LineChart as LineChartIcon, Trophy, AlertTriangle, Clock, XCircle, ArrowUpRight, ChevronRight } from 'lucide-react';
+import { DollarSign, Activity, Users, Calendar as CalendarIcon, PieChart as PieIcon, MapPin, TrendingDown, LineChart as LineChartIcon, Trophy, AlertTriangle, Clock, XCircle, ArrowUpRight, ChevronRight, Search } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, Legend, PieChart, Pie, Cell } from 'recharts';
 import { Patient, Appointment, ClinicalRecord, Location, Expense, PaymentRecord, CancellationOutcome } from '../types';
 import { formatCurrency, Currency } from '../utils/currency';
@@ -79,6 +79,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
   const [analysisRecords, setAnalysisRecords] = useState<ClinicalRecord[]>([]);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
+  const [patientBalanceSearch, setPatientBalanceSearch] = useState('');
   const analysisRequestRef = useRef(0);
   const monthlyReportRequestRef = useRef(0);
   const monthlyReportResetTimerRef = useRef<number | null>(null);
@@ -594,6 +595,11 @@ const DashboardView: React.FC<DashboardViewProps> = ({
     }))
     .sort((a, b) => Number(b.hasOutstandingBalance) - Number(a.hasOutstandingBalance) || b.balance - a.balance || a.patient.name.localeCompare(b.patient.name)), [patients]);
   const patientsWithOutstandingBalances = patientBalanceStatuses.filter(({ hasOutstandingBalance }) => hasOutstandingBalance);
+  const filteredPatientBalanceStatuses = useMemo(() => {
+    const search = patientBalanceSearch.trim().toLocaleLowerCase();
+    if (!search) return patientBalanceStatuses;
+    return patientBalanceStatuses.filter(({ patient }) => patient.name.toLocaleLowerCase().includes(search));
+  }, [patientBalanceSearch, patientBalanceStatuses]);
 
   const formatDateLabel = (dateStr: string) => new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -1254,13 +1260,28 @@ const DashboardView: React.FC<DashboardViewProps> = ({
             <h3 className="text-lg font-semibold text-gray-800">Patient Balance Status</h3>
             <p className="text-xs text-gray-500">Current balances for all patients in {selectedLocationName}</p>
           </div>
-          <div className="flex items-center gap-2 text-xs font-bold">
-            <span className="rounded-full bg-rose-50 px-3 py-1.5 text-rose-700">{patientsWithOutstandingBalances.length} with debt</span>
-            <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{patientBalanceStatuses.length - patientsWithOutstandingBalances.length} clear</span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold">
+              <span className="rounded-full bg-rose-50 px-3 py-1.5 text-rose-700">{patientsWithOutstandingBalances.length} with debt</span>
+              <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{patientBalanceStatuses.length - patientsWithOutstandingBalances.length} clear</span>
+            </div>
+            <label className="relative block w-full sm:w-64">
+              <span className="sr-only">Search patient balances</span>
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <input
+                type="search"
+                value={patientBalanceSearch}
+                onChange={(event) => setPatientBalanceSearch(event.target.value)}
+                placeholder="Search patients..."
+                className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm text-gray-700 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+              />
+            </label>
           </div>
         </div>
         {patientBalanceStatuses.length === 0 ? (
           <p className="text-sm italic text-gray-400">No patients in this scope.</p>
+        ) : filteredPatientBalanceStatuses.length === 0 ? (
+          <p className="text-sm italic text-gray-400">No patients match "{patientBalanceSearch.trim()}".</p>
         ) : (
           <div className="max-h-80 overflow-y-auto rounded-lg border border-gray-100">
             <table className="w-full text-sm">
@@ -1272,7 +1293,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {patientBalanceStatuses.map(({ patient, balance, hasOutstandingBalance }) => (
+                {filteredPatientBalanceStatuses.map(({ patient, balance, hasOutstandingBalance }) => (
                   <tr key={patient.id} className="cursor-pointer text-gray-700 hover:bg-indigo-50" onClick={() => onSelectPatient(patient)}>
                     <td className="py-2.5 px-3 font-medium text-gray-900">{patient.name}</td>
                     <td className="py-2.5 px-3">
