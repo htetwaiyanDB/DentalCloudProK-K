@@ -9,7 +9,7 @@ import { buildSupabasePublicUrl, deleteSupabaseStorageFile, isSupabaseStorageRea
 import { findInvalidTeeth } from '../utils/toothNumbering';
 import { getPaymentHeaderMethod, normalizePaymentAllocations, normalizePaymentMethod, validatePaymentAllocations } from '../utils/paymentMethods';
 import { normalizePaymentReceiptSnapshot } from '../utils/paymentReceipt';
-import { getPaymentTreatmentShare } from '../utils/paymentTreatmentAllocation';
+import { getPaymentAvailableTreatmentAmount, getPaymentTreatmentShare } from '../utils/paymentTreatmentAllocation';
 import { DEFAULT_RECEIPT_PREFERENCES, normalizeReceiptPreferences } from '../utils/receiptPreferences';
 import { resolveDoctorCommissionType, usesFlatVisitCommission, validateDoctorCommissionPercentage, validateDoctorCommissionPerVisit, validateDoctorCommissionType } from '../utils/doctorCommission';
 import { allocateCommissionablePayments, calculateCommissionLedgerEntries } from '../utils/doctorCommissionLedger';
@@ -233,6 +233,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     date: row.date,
     cost: Math.max(0, Number(row.cost || 0)),
     materialCost: materialByTreatment[row.id]?.totalAmount || 0,
+    specialDoctorCost: materialByTreatment[row.id]?.specialDoctorTotal || 0,
     commissionType: resolveDoctorCommissionType({
       commissionType: row.commission_type_snapshot ?? row.doctors?.commission_type,
       specialization: row.doctors?.specialization
@@ -250,17 +251,48 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
       ? customRateByDoctorAndType.get(`${row.doctor_id}|${row.treatment_type_id}`)
       : undefined
   }));
-  const payments = (paymentRows || []).map((row: any) => ({
-    id: row.id,
-    patientId: row.patient_id,
-    date: row.payment_date || row.created_at?.slice(0, 10) || '',
-    createdAt: row.created_at,
-    commissionableAmount: getPaymentCommissionableAmount(row),
-    treatmentIds: Array.from(new Set([
+  const treatmentById = new Map(treatments.map((treatment) => [treatment.id, treatment]));
+  const payments = (paymentRows || []).map((row: any) => {
+    const paymentDate = row.payment_date || row.created_at?.slice(0, 10) || '';
+    const treatmentIds = Array.from(new Set([
       ...(Array.isArray(row.treatment_ids) ? row.treatment_ids : []),
       ...getPaymentReceiptTreatmentIds(row)
-    ]))
-  }));
+    ]));
+    const specialDoctorOwner = treatmentIds
+      .map((treatmentId) => treatmentById.get(treatmentId))
+      .find((treatment) => treatment && treatment.date === paymentDate && Number(treatment.specialDoctorCost || 0) > 0);
+    const specialDoctorVisitTotal = specialDoctorOwner
+      ? treatments
+          .filter((treatment) => treatment.patientId === row.patient_id && treatment.date === specialDoctorOwner.date)
+          .reduce((sum, treatment) => sum + Number(treatment.cost || 0), 0)
+      : 0;
+    const paymentForAllocation: PaymentRecord = {
+      id: String(row.id || ''),
+      patientId: String(row.patient_id || ''),
+      amount: Math.max(0, Number(row.amount || 0)),
+      clearedAmount: Math.max(0, Number(row.cleared_amount ?? row.amount ?? 0)),
+      date: paymentDate,
+      type: 'PARTIAL',
+      remainingBalance: 0,
+      receiptSnapshot: normalizePaymentReceiptSnapshot(row.receipt_snapshot)
+    };
+    const standardCommissionableAmount = getPaymentCommissionableAmount(row);
+    const commissionableAmount = specialDoctorVisitTotal > 0
+      ? Math.max(
+          standardCommissionableAmount,
+          Math.min(specialDoctorVisitTotal, getPaymentAvailableTreatmentAmount(paymentForAllocation))
+        )
+      : standardCommissionableAmount;
+
+    return {
+      id: row.id,
+      patientId: row.patient_id,
+      date: paymentDate,
+      createdAt: row.created_at,
+      commissionableAmount,
+      treatmentIds
+    };
+  });
   const allocations = allocateCommissionablePayments(treatments, payments);
   const existingEntries = (existingResult.data || []).map((row: any) => ({
     id: row.id,

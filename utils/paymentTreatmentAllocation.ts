@@ -30,21 +30,28 @@ export const dedupePaymentRecords = (payments: PaymentRecord[]): PaymentRecord[]
   Array.from(new Map(payments.map((payment) => [getPaymentDedupeKey(payment), payment])).values())
 );
 
-export const getPaymentTreatmentShare = (payment: PaymentRecord): number => {
+export const getPaymentAvailableTreatmentAmount = (payment: PaymentRecord): number => {
   const collected = positiveMoney(payment.clearedAmount ?? payment.amount);
   const snapshot = payment.receiptSnapshot;
   if (!snapshot) return roundMoney(Math.max(0, collected - getPaymentServiceFeeAmount(payment)));
 
-  const treatmentValue = (snapshot.treatments || []).reduce(
-    (sum, item) => sum + positiveMoney(item.finalCost),
-    0
-  );
   const medicineValue = (snapshot.medicines || []).reduce(
     (sum, item) => sum + positiveMoney(item.totalPrice),
     0
   );
   const serviceFee = positiveMoney(snapshot.payment.serviceFeeAmount);
-  const availableAfterNonTreatmentCharges = Math.max(0, collected - serviceFee - medicineValue);
+  return roundMoney(Math.max(0, collected - serviceFee - medicineValue));
+};
+
+export const getPaymentTreatmentShare = (payment: PaymentRecord): number => {
+  const snapshot = payment.receiptSnapshot;
+  const availableAfterNonTreatmentCharges = getPaymentAvailableTreatmentAmount(payment);
+  if (!snapshot) return availableAfterNonTreatmentCharges;
+
+  const treatmentValue = (snapshot.treatments || []).reduce(
+    (sum, item) => sum + positiveMoney(item.finalCost),
+    0
+  );
 
   // Explicit treatment lines cap the commissionable share. Some legacy mixed
   // receipts saved medicine lines but omitted their treatment lines; in that

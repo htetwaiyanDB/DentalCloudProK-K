@@ -13,6 +13,7 @@ export interface CommissionTreatmentInput {
   commissionPercentage?: number | null;
   commissionPerVisit?: number | null;
   customCommissionPercentage?: number | null;
+  specialDoctorCost?: number | null;
   commissionSnapshotType?: DoctorCommissionType | string | null;
   commissionSnapshotPercentage?: number | null;
   commissionSnapshotPerVisit?: number | null;
@@ -94,6 +95,13 @@ const byTreatmentOrder = (a: CommissionTreatmentInput, b: CommissionTreatmentInp
   a.date.localeCompare(b.date) || a.id.localeCompare(b.id)
 );
 
+const prioritizePaymentDay = (paymentDate: string) => (
+  a: CommissionTreatmentInput,
+  b: CommissionTreatmentInput
+) => (
+  Number(b.date === paymentDate) - Number(a.date === paymentDate) || byTreatmentOrder(a, b)
+);
+
 export const allocateCommissionablePayments = (
   treatments: CommissionTreatmentInput[],
   payments: CommissionPaymentInput[]
@@ -164,7 +172,11 @@ export const allocateCommissionablePayments = (
     // collects both a new treatment and an older balance in one payment. Any amount
     // left after all treatment debt is covered belongs to non-commissionable charges.
     const candidates = (treatmentsByPatient.get(payment.patientId) || [])
-      .filter((treatment) => treatment.date <= payment.date);
+      .filter((treatment) => treatment.date <= payment.date)
+      // A payment collected on the treatment date belongs to that day's visit
+      // before legacy unlinked debt. This keeps a same-day partial payment on
+      // the record that generated it while retaining FIFO for older balances.
+      .sort(prioritizePaymentDay(payment.date));
     for (const treatment of candidates) {
       const remaining = remainingByTreatment.get(treatment.id) || 0;
       if (remaining <= 0 || amountLeft <= 0) continue;
@@ -189,6 +201,55 @@ export const calculateCommissionLedgerEntries = (
   existingEntries: ExistingCommissionEntryInput[] = []
 ): CalculatedCommissionEntry[] => {
   const treatmentById = new Map(treatments.map((treatment) => [treatment.id, treatment]));
+
+  // A Special Doctor Cost represents an outside clinician paid as a visit
+  // expense. When that visit also contains treatment rows recorded under the
+  // outside clinician, the treatment carrying the special-doctor cost remains
+  // the commission owner for the whole same-day visit. No UI/data-entry flow
+  // change is required and ordinary multi-doctor visits are left untouched.
+  const treatmentsByPatientDate = new Map<string, CommissionTreatmentInput[]>();
+  treatments.forEach((treatment) => {
+    const key = `${treatment.patientId}|${treatment.date}`;
+    const rows = treatmentsByPatientDate.get(key) || [];
+    rows.push(treatment);
+    treatmentsByPatientDate.set(key, rows);
+  });
+  const specialDoctorOwnerByPatientDate = new Map<string, CommissionTreatmentInput>();
+  treatmentsByPatientDate.forEach((rows, key) => {
+    const doctorIds = new Set(rows.map((row) => row.doctorId).filter(Boolean));
+    const owners = rows.filter((row) => (
+      row.doctorId
+      && toNonNegativeFiniteNumber(row.specialDoctorCost) > 0
+      && !usesFlatVisitCommission({
+        commissionType: row.commissionSnapshotType ?? row.commissionType,
+        specialization: row.specialization
+      })
+      && toPercentageRate(
+        row.commissionSnapshotPercentage
+          ?? row.customCommissionPercentage
+          ?? row.commissionPercentage
+          ?? 0
+      ) > 0
+    ));
+    if (doctorIds.size > 1 && owners.length === 1) {
+      specialDoctorOwnerByPatientDate.set(key, owners[0]);
+    }
+  });
+  const normalizedAllocations = Array.from(
+    allocations.reduce((rows, allocation) => {
+      const treatment = treatmentById.get(allocation.treatmentId);
+      const owner = treatment
+        ? specialDoctorOwnerByPatientDate.get(`${treatment.patientId}|${treatment.date}`)
+        : undefined;
+      const normalized = owner ? { ...allocation, treatmentId: owner.id } : allocation;
+      const key = `${normalized.paymentId}|${normalized.treatmentId}`;
+      const existing = rows.get(key);
+      rows.set(key, existing
+        ? { ...existing, amount: roundMoney(existing.amount + normalized.amount) }
+        : normalized);
+      return rows;
+    }, new Map<string, TreatmentPaymentAllocation>()).values()
+  );
   const existingByAllocation = new Map(
     existingEntries.map((entry) => [`${entry.paymentId}|${entry.treatmentId}`, entry])
   );
@@ -219,12 +280,12 @@ export const calculateCommissionLedgerEntries = (
   }> = [];
   const percentageTreatmentIds = new Set<string>();
   const flatCandidates = new Map<string, Array<TreatmentPaymentAllocation & { treatment: CommissionTreatmentInput }>>();
-  const allocationKeys = new Set(allocations.map((allocation) => `${allocation.paymentId}|${allocation.treatmentId}`));
+  const allocationKeys = new Set(normalizedAllocations.map((allocation) => `${allocation.paymentId}|${allocation.treatmentId}`));
   const orphanedFlatVisitKeys = new Set(existingEntries
     .filter((entry) => entry.calculationMode === 'flat_visit' && entry.visitKey && !allocationKeys.has(`${entry.paymentId}|${entry.treatmentId}`))
     .map((entry) => entry.visitKey as string));
   const orphanedFlatTargetByVisit = new Map<string, string>();
-  [...allocations]
+  [...normalizedAllocations]
     .sort((a, b) => a.paymentDate.localeCompare(b.paymentDate) || a.paymentId.localeCompare(b.paymentId) || a.treatmentId.localeCompare(b.treatmentId))
     .forEach((allocation) => {
       const treatment = treatmentById.get(allocation.treatmentId);
@@ -235,7 +296,7 @@ export const calculateCommissionLedgerEntries = (
       }
     });
 
-  [...allocations]
+  [...normalizedAllocations]
     .sort((a, b) => a.paymentDate.localeCompare(b.paymentDate) || a.paymentId.localeCompare(b.paymentId))
     .forEach((allocation) => {
       const treatment = treatmentById.get(allocation.treatmentId);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PaymentRecord, PaymentReceiptSnapshot } from '../types';
-import { getPaymentTreatmentShare } from './paymentTreatmentAllocation';
+import { getPaymentAvailableTreatmentAmount, getPaymentTreatmentShare } from './paymentTreatmentAllocation';
 
 const receipt = (amountPaid: number, medicineTotal: number): PaymentReceiptSnapshot => ({
   version: 1,
@@ -47,5 +47,16 @@ describe('payment treatment allocation', () => {
 
   it('does not make a medicine-only receipt commissionable', () => {
     expect(getPaymentTreatmentShare(payment(13_000, 13_000))).toBe(0);
+  });
+
+  it('exposes the amount left after non-treatment charges when a grouped receipt captured only one treatment line', () => {
+    const groupedPayment = payment(230_000, 0);
+    groupedPayment.receiptSnapshot!.treatments = [{
+      id: 'main-treatment', date: '2026-09-12', description: 'ELA', teeth: [28],
+      finalCost: 30_000, standardCost: 30_000, discountAmount: 0, pricingNote: null
+    }];
+
+    expect(getPaymentTreatmentShare(groupedPayment)).toBe(30_000);
+    expect(getPaymentAvailableTreatmentAmount(groupedPayment)).toBe(230_000);
   });
 });
