@@ -264,6 +264,16 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     return patients.find((patient) => patient.id === appointment.patient_id);
   };
 
+  const getPatientAge = (appointment: Appointment) => {
+    const age = getPatientForAppointment(appointment)?.age;
+    return typeof age === 'number' && Number.isFinite(age) && age >= 0 ? age : undefined;
+  };
+
+  const renderPatientAge = (appointment: Appointment, className = 'mt-1 text-xs text-gray-500') => {
+    const age = getPatientAge(appointment);
+    return age === undefined ? null : <p className={className}>Age: {age}</p>;
+  };
+
   const handleRegisteredPatientClick = (appointment: Appointment) => {
     if (onEditPatientInfo) {
       onEditPatientInfo(appointment);
@@ -931,6 +941,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                                   {renderPatientName(appointment, 'font-semibold text-gray-900')}
                                   {isNewPatientAppointment(appointment) && renderNewPatientBadge()}
                                 </div>
+                                {renderPatientAge(appointment)}
                                 <p className="text-xs text-gray-500 mt-1">
                                   {formatDoctorDisplayName(appointment.doctor_name)} • {formatDateDDMMYYYY(appointment.date)} • {formatTime(appointment.time)}
                                 </p>
@@ -981,6 +992,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                                   {renderPatientName(appointment, 'font-semibold text-gray-800')}
                                   {isNewPatientAppointment(appointment) && renderNewPatientBadge()}
                                 </div>
+                                {renderPatientAge(appointment)}
                                 <p className="text-xs text-gray-500 mt-1">
                                   {formatDoctorDisplayName(appointment.doctor_name)} • {formatDateDDMMYYYY(appointment.date)} • {formatTime(appointment.time)}
                                 </p>
@@ -1051,6 +1063,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                                         {appointment.guest_phone || 'No phone'}{appointment.guest_source ? ` • ${appointment.guest_source}` : ''}
                                       </div>
                                     )}
+                                    {renderPatientAge(appointment, 'mt-1 text-xs font-normal text-gray-500')}
                                   </td>
                                   <td className="px-3 py-3 align-top text-gray-700">{appointment.type || 'Checkup'}</td>
                                   <td className="px-3 py-3 align-top">
@@ -1223,6 +1236,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                               {renderPatientName(appointment, 'truncate')}
                               {isNewPatientAppointment(appointment) && renderNewPatientBadge(true)}
                             </div>
+                            {renderPatientAge(appointment)}
                             <div className="text-[11px] md:text-xs text-gray-500 mt-0.5 truncate">
                               {formatTime(appointment.time)} • {appointment.type || 'Checkup'}
                               {appointment.doctor_name ? ` • ${formatDoctorDisplayName(appointment.doctor_name)}` : ''}

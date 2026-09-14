@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Ban, Beaker, Loader2, Download, CalendarDays, Stethoscope, ShieldCheck, Search, RotateCw, WalletCards, Printer, Pencil, Package } from 'lucide-react';
-import { Appointment, AppointmentRescheduleLog, ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
+import { Appointment, AppointmentRescheduleLog, ClinicalRecord, Patient, PaymentRecord, TreatmentCostSummary } from '../types';
 import { formatCurrency, Currency } from '../utils/currency';
 import { exportClinicalRecordsToPDF } from '../utils/pdfExport';
 import { exportClinicalRecordsToExcel } from '../utils/excelExport';
@@ -19,6 +19,7 @@ import { calculateMaterialAdjustedDoctorEarnings } from '../utils/materialCostCa
 
 interface RecordsViewProps {
   records: ClinicalRecord[];
+  patients?: Patient[];
   appointments?: Appointment[];
   rescheduleLogs?: AppointmentRescheduleLog[];
   payments?: PaymentRecord[];
@@ -35,7 +36,7 @@ interface RecordsViewProps {
   onQueryChange?: (query: { dateFrom: string; dateTo: string; auditFilter: AuditFilter }) => void;
 }
 
-const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], rescheduleLogs = [], payments = [], loading, onRefresh, onDeleteAll, currency, isDoctor = false, initialFilter = 'all', onOpenPaymentReceipt, canEditPayments = false, onPaymentCorrected, loadError = null, onQueryChange }) => {
+const RecordsView: React.FC<RecordsViewProps> = ({ records, patients = [], appointments = [], rescheduleLogs = [], payments = [], loading, onRefresh, onDeleteAll, currency, isDoctor = false, initialFilter = 'all', onOpenPaymentReceipt, canEditPayments = false, onPaymentCorrected, loadError = null, onQueryChange }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -48,6 +49,21 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
   const [materialSummaries, setMaterialSummaries] = useState<Record<string, TreatmentCostSummary>>({});
   const isTodayRange = dateFrom === todayKey && dateTo === todayKey;
   const itemsPerPage = 10;
+
+  const patientAgeById = useMemo(() => {
+    const ages = new Map<string, number>();
+    patients.forEach((patient) => {
+      if (typeof patient.age === 'number' && Number.isFinite(patient.age) && patient.age >= 0) {
+        ages.set(patient.id, patient.age);
+      }
+    });
+    return ages;
+  }, [patients]);
+
+  const renderPatientAge = (patientId?: string | null) => {
+    const age = patientId ? patientAgeById.get(patientId) : undefined;
+    return age === undefined ? null : <p className="mt-1 text-xs font-normal text-slate-500">Age: {age}</p>;
+  };
 
   const handleDateFromChange = (value: string) => {
     setDateFrom(value);
@@ -599,7 +615,10 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                           </span>
                         </td>
                         <td className="px-4 py-4 text-sm text-slate-500 whitespace-nowrap xl:px-6">{rec.date}</td>
-                        <td className="px-4 py-4 font-bold text-slate-900 xl:px-6">{rec.patient_name || 'Unknown'}</td>
+                        <td className="px-4 py-4 font-bold text-slate-900 xl:px-6">
+                          {rec.patient_name || 'Unknown'}
+                          {renderPatientAge(rec.patient_id)}
+                        </td>
                         <td className="px-4 py-4 text-sm text-slate-700 xl:px-6">{formatDoctorName(rec.doctor_name)}</td>
                         <td className="px-4 py-4 text-sm text-slate-700 max-w-md xl:px-6">
                           {renderTreatmentDescriptionList(rec)}
@@ -794,6 +813,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                       <div className="min-w-0 flex-1">
                         <p className="text-[11px] font-black uppercase tracking-wider text-emerald-500">Treatment</p>
                         <p className="mt-0.5 break-words text-sm font-bold text-slate-900">{rec.patient_name || 'Unknown'}</p>
+                        {renderPatientAge(rec.patient_id)}
                         <p className="mt-1 text-xs text-slate-500">{rec.date}</p>
                         <p className="mt-1 break-words text-xs text-slate-500">{rec.doctor_name ? formatDoctorName(rec.doctor_name) : 'No clinician assigned'}</p>
                       </div>
