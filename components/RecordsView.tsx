@@ -164,8 +164,8 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
     ), 0);
   };
 
-  const getTypedCostTotal = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab') => {
-    const key = costType === 'lab' ? 'labTotal' : 'materialTotal';
+  const getTypedCostTotal = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab' | 'special_doctor') => {
+    const key = costType === 'lab' ? 'labTotal' : costType === 'special_doctor' ? 'specialDoctorTotal' : 'materialTotal';
     return getTreatmentRecordIds(record).reduce((sum, treatmentId) => sum + Number(materialSummaries[treatmentId]?.[key] || 0), 0);
   };
 
@@ -444,7 +444,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                   <th className="px-6 py-4 text-right text-[11px] font-black text-slate-500 uppercase tracking-[0.18em]">Amount</th>
                   <th className="px-6 py-4 text-right text-[11px] font-black text-amber-700 uppercase tracking-[0.18em]">Discount</th>
                   <th className="px-6 py-4 text-right text-[11px] font-black text-slate-500 uppercase tracking-[0.18em]">Service Charges</th>
-                  <th className="px-6 py-4 text-right text-[11px] font-black text-slate-500 uppercase tracking-[0.18em]">Material & Lab</th>
+                  <th className="px-6 py-4 text-right text-[11px] font-black text-slate-500 uppercase tracking-[0.18em]">MLS Costs</th>
                   <th className="px-6 py-4 text-right text-[11px] font-black text-slate-500 uppercase tracking-[0.18em]">Doctor Earned</th>
                   <th className="px-6 py-4 text-left text-[11px] font-black text-slate-500 uppercase tracking-[0.18em]">Action</th>
                 </tr>
@@ -589,6 +589,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                     const rec = row.record;
                     const materialOnlyTotal = getTypedCostTotal(rec, 'material');
                     const labTotal = getTypedCostTotal(rec, 'lab');
+                    const specialDoctorTotal = getTypedCostTotal(rec, 'special_doctor');
                     const adjustedDoctorEarned = getAdjustedDoctorEarned(rec);
                     return (
                       <tr key={`treatment-${rec.id}`} className="border-l-4 border-emerald-300 transition-colors hover:bg-emerald-50/30">
@@ -612,10 +613,11 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                         <td className="px-4 py-4 text-right text-sm font-black text-amber-700 xl:px-6">{rec.discountAmount ? `-${formatCurrency(rec.discountAmount, currency)}` : '-'}</td>
                         <td className="px-4 py-4 text-right text-sm font-bold text-indigo-700 xl:px-6">{rec.serviceCharges ? formatCurrency(rec.serviceCharges, currency) : '-'}</td>
                         <td className="px-4 py-4 text-right text-xs font-bold xl:px-6">
-                          {materialOnlyTotal > 0 || labTotal > 0 ? (
+                          {materialOnlyTotal > 0 || labTotal > 0 || specialDoctorTotal > 0 ? (
                             <div className="space-y-1">
                               {materialOnlyTotal > 0 && <div className="text-cyan-700">M: {formatCurrency(materialOnlyTotal, currency)}</div>}
                               {labTotal > 0 && <div className="text-violet-700">L: {formatCurrency(labTotal, currency)}</div>}
+                              {specialDoctorTotal > 0 && <div className="text-amber-700">S: {formatCurrency(specialDoctorTotal, currency)}</div>}
                             </div>
                           ) : '-'}
                         </td>
@@ -783,6 +785,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                 const rec = row.record;
                 const materialOnlyTotal = getTypedCostTotal(rec, 'material');
                 const labTotal = getTypedCostTotal(rec, 'lab');
+                const specialDoctorTotal = getTypedCostTotal(rec, 'special_doctor');
                 const adjustedDoctorEarned = getAdjustedDoctorEarned(rec);
                 return (
                   <div key={`treatment-${rec.id}`} className="my-2 min-w-0 overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-sm ring-1 ring-emerald-50">
@@ -817,6 +820,15 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, appointments = [], r
                         <span className="inline-flex min-w-0 items-center gap-1 text-right text-sm font-bold text-violet-800">
                           <Beaker size={14} />
                           {formatCurrency(labTotal, currency)}
+                        </span>
+                      </div>
+                    ) : null}
+                    {specialDoctorTotal > 0 ? (
+                      <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-amber-50 p-3">
+                        <span className="text-xs font-semibold text-amber-700">Special Doctor Cost</span>
+                        <span className="inline-flex min-w-0 items-center gap-1 text-right text-sm font-bold text-amber-800">
+                          <Stethoscope size={14} />
+                          {formatCurrency(specialDoctorTotal, currency)}
                         </span>
                       </div>
                     ) : null}

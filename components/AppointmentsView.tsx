@@ -1215,8 +1215,9 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                   <div className="space-y-1.5 md:space-y-2">
                     {selectedDayAppointments.map((appointment) => {
                       const clinicalPlan = parseAppointmentClinicalFocus(appointment.notes);
+                      const appointmentNote = clinicalPlan.notes.trim();
                       return (
-                        <div key={appointment.id} className="flex flex-col md:flex-row md:items-center justify-between p-2 md:p-3 border border-gray-200 rounded-lg gap-2 md:gap-0">
+                        <div key={appointment.id} className="flex flex-col justify-between gap-3 rounded-lg border border-gray-200 p-3 xl:flex-row xl:items-center xl:gap-4">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-1.5 md:gap-2 text-xs md:text-sm font-medium text-gray-900">
                               {renderPatientName(appointment, 'truncate')}
@@ -1237,7 +1238,21 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                               </div>
                             )}
                           </div>
-                          <div className="flex flex-wrap items-center gap-1.5 md:gap-2 flex-shrink-0">
+                          {appointmentNote && (
+                            <div
+                              className="appointment-note-panel w-full min-w-0 rounded-lg border border-l-4 px-3 py-2 xl:w-64 xl:flex-shrink-0 2xl:w-80"
+                              aria-label={`Appointment note: ${appointmentNote}`}
+                            >
+                              <div className="appointment-note-label flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide">
+                                <FileText className="appointment-note-icon h-3.5 w-3.5" aria-hidden="true" />
+                                <span>Appointment note</span>
+                              </div>
+                              <p className="appointment-note-content mt-1 whitespace-pre-wrap break-words text-xs font-medium leading-5">
+                                {appointmentNote}
+                              </p>
+                            </div>
+                          )}
+                          <div className="flex flex-wrap items-center gap-1.5 md:gap-2 xl:flex-shrink-0 xl:justify-end">
                             {renderAppointmentActionButtons(appointment, true)}
                             {isNewPatientAppointment(appointment) && onConvertLead ? (
                               <button

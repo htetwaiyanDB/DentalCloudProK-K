@@ -291,6 +291,27 @@ body {
   background-color: color-mix(in srgb, var(--hover-500) 20%, white);
 }
 
+/* Read-only appointment context uses the active theme at a quieter intensity
+   than the nearby action buttons. */
+.appointment-note-panel {
+  border-color: color-mix(in srgb, var(--hover-500) 32%, white);
+  border-left-color: var(--hover-600);
+  background-color: color-mix(in srgb, var(--hover-500) 8%, white);
+  box-shadow: 0 8px 18px -17px var(--hover-700), inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.appointment-note-label {
+  color: var(--hover-700);
+}
+
+.appointment-note-icon {
+  color: var(--hover-600);
+}
+
+.appointment-note-content {
+  color: var(--hover-800);
+}
+
 /* Theme-aware navigation colors */
 :root,
 [data-theme='blue'] {

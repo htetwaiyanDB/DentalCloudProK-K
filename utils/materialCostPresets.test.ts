@@ -9,10 +9,11 @@ import {
 
 const ids = {
   material: '11111111-1111-4111-8111-111111111111',
-  lab: '22222222-2222-4222-8222-222222222222'
+  lab: '22222222-2222-4222-8222-222222222222',
+  specialDoctor: '33333333-3333-4333-8333-333333333333'
 };
 
-const emptyRow = (costType: 'material' | 'lab'): MaterialCostDraftRow => ({
+const emptyRow = (costType: 'material' | 'lab' | 'special_doctor'): MaterialCostDraftRow => ({
   localId: `new-${costType}`,
   materialName: '',
   costType,
@@ -25,12 +26,14 @@ describe('material and lab cost presets', () => {
   it('normalizes labels, amounts, and ordering without mutating the input', () => {
     const source = [
       { id: ids.lab, costType: 'lab' as const, label: ' Crown Lab ', amount: 123.456, sortOrder: 9 },
-      { id: ids.material, costType: 'material' as const, label: 'Composite', amount: 50, sortOrder: 8 }
+      { id: ids.material, costType: 'material' as const, label: 'Composite', amount: 50, sortOrder: 8 },
+      { id: ids.specialDoctor, costType: 'special_doctor' as const, label: 'Visiting surgeon', amount: 500, sortOrder: 7 }
     ];
 
     expect(normalizeMaterialCostPresetInputs(source)).toEqual([
       { id: ids.lab, costType: 'lab', label: 'Crown Lab', amount: 123.46, sortOrder: 0 },
-      { id: ids.material, costType: 'material', label: 'Composite', amount: 50, sortOrder: 1 }
+      { id: ids.material, costType: 'material', label: 'Composite', amount: 50, sortOrder: 1 },
+      { id: ids.specialDoctor, costType: 'special_doctor', label: 'Visiting surgeon', amount: 500, sortOrder: 2 }
     ]);
     expect(source[0].label).toBe(' Crown Lab ');
   });

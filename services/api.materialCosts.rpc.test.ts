@@ -8,7 +8,8 @@ const supabaseMock = vi.hoisted(() => {
       return {
         data: [
           { id: 'cost-1', audit_log_id: 'audit-1', material_name: 'Composite', cost_type: 'material', cost_amount: 100, quantity: 2, total_amount: 200 },
-          { id: 'cost-2', audit_log_id: 'audit-1', material_name: 'Crown lab', cost_type: 'lab', cost_amount: 300, quantity: 1, total_amount: 300 }
+          { id: 'cost-2', audit_log_id: 'audit-1', material_name: 'Crown lab', cost_type: 'lab', cost_amount: 300, quantity: 1, total_amount: 300 },
+          { id: 'cost-3', audit_log_id: 'audit-1', material_name: 'Implant doctor', cost_type: 'special_doctor', cost_amount: 100000, quantity: 1, total_amount: 100000 }
         ],
         error: null
       };
@@ -50,7 +51,8 @@ describe('api.materialCosts transactional RPC', () => {
       id: 'treatment-1', location_id: 'location-1', patient_id: 'patient-1', teeth: [], description: 'Crown', cost: 1000, date: '2026-07-18'
     }, [
       { materialName: ' Composite ', costType: 'material', costAmount: 100, quantity: 2 },
-      { materialName: 'Crown lab', costType: 'lab', costAmount: 300, quantity: 1 }
+      { materialName: 'Crown lab', costType: 'lab', costAmount: 300, quantity: 1 },
+      { materialName: ' Implant doctor ', costType: 'special_doctor', costAmount: 100000, quantity: 1 }
     ], { userId: 'admin-1', username: 'Admin', authToken: 'session-token-1' });
 
     expect(supabaseMock.rpcCalls[0]).toEqual({
@@ -59,16 +61,17 @@ describe('api.materialCosts transactional RPC', () => {
         p_audit_log_id: 'audit-1',
         p_items: [
           { material_name: 'Composite', cost_type: 'material', cost_amount: 100, quantity: 2 },
-          { material_name: 'Crown lab', cost_type: 'lab', cost_amount: 300, quantity: 1 }
+          { material_name: 'Crown lab', cost_type: 'lab', cost_amount: 300, quantity: 1 },
+          { material_name: 'Implant doctor', cost_type: 'special_doctor', cost_amount: 100000, quantity: 1 }
         ],
         p_admin_user_id: 'admin-1',
         p_admin_password: 'session-token-1',
         p_request_token: expect.any(String)
       }
     });
-    expect(result.items.map((item) => item.costType)).toEqual(['material', 'lab']);
+    expect(result.items.map((item) => item.costType)).toEqual(['material', 'lab', 'special_doctor']);
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      'Material and lab costs were saved, but doctor commission refresh needs retry.',
+      'Treatment costs were saved, but doctor commission refresh needs retry.',
       expect.any(Error)
     );
   });

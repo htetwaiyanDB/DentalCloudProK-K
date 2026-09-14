@@ -9,7 +9,7 @@ import { buildSupabasePublicUrl, deleteSupabaseStorageFile, isSupabaseStorageRea
 import { findInvalidTeeth } from '../utils/toothNumbering';
 import { getPaymentHeaderMethod, normalizePaymentAllocations, normalizePaymentMethod, validatePaymentAllocations } from '../utils/paymentMethods';
 import { normalizePaymentReceiptSnapshot } from '../utils/paymentReceipt';
-import { getPaymentTreatmentShare } from '../utils/paymentTreatmentAllocation';
+import { getPaymentAvailableTreatmentAmount, getPaymentTreatmentShare } from '../utils/paymentTreatmentAllocation';
 import { DEFAULT_RECEIPT_PREFERENCES, normalizeReceiptPreferences } from '../utils/receiptPreferences';
 import { resolveDoctorCommissionType, usesFlatVisitCommission, validateDoctorCommissionPercentage, validateDoctorCommissionPerVisit, validateDoctorCommissionType } from '../utils/doctorCommission';
 import { allocateCommissionablePayments, calculateCommissionLedgerEntries } from '../utils/doctorCommissionLedger';
@@ -85,9 +85,11 @@ const buildExpensePayload = (data: Partial<Expense>, existing?: Partial<Expense>
   return payload;
 };
 
-const getTreatmentCostExpenseMetadata = (costType: TreatmentCostType) => costType === 'lab'
-  ? { category: 'Lab Cost', sourceType: 'lab_cost', label: 'Lab cost' }
-  : { category: 'Material Cost', sourceType: 'material_cost', label: 'Material cost' };
+const getTreatmentCostExpenseMetadata = (costType: TreatmentCostType) => {
+  if (costType === 'lab') return { category: 'Lab Cost', sourceType: 'lab_cost', label: 'Lab cost' };
+  if (costType === 'special_doctor') return { category: 'Special Doctor Cost', sourceType: 'special_doctor_cost', label: 'Special doctor cost' };
+  return { category: 'Material Cost', sourceType: 'material_cost', label: 'Material cost' };
+};
 
 const buildTreatmentCostExpenseDescription = (
   treatment: Partial<ClinicalRecord>,
@@ -136,10 +138,27 @@ const getPaymentReceiptTreatmentIds = (payment: any): string[] => {
   return (snapshot?.treatments || []).map((treatment) => treatment.id).filter(Boolean);
 };
 
+// Ledger recalculation runs on every MLS cost save. Writing a patient's full
+// ledger back one HTTP request at a time used to dominate that save's runtime,
+// so rows are now diffed against storage and only genuine changes are written.
+const sameLedgerText = (left: unknown, right: unknown): boolean => {
+  const normalize = (value: unknown): string => {
+    if (value === null || value === undefined) return '';
+    const text = String(value).trim();
+    const timestampDate = /^(\d{4}-\d{2}-\d{2})T/.exec(text);
+    return timestampDate ? timestampDate[1] : text;
+  };
+  return normalize(left) === normalize(right);
+};
+
+const sameLedgerMoney = (left: unknown, right: unknown): boolean => {
+  return Math.abs(Number(left || 0) - Number(right || 0)) < 0.005;
+};
+
 const recalculatePatientDoctorCommissions = async (patientId: string): Promise<void> => {
   let { data: treatmentRows, error: treatmentError }: { data: any[] | null; error: any } = await supabase
     .from('treatments')
-    .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
+    .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, doctor_earnings, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
     .eq('patient_id', patientId);
 
   if (treatmentError && isMissingColumnError(treatmentError, 'commission_type_snapshot')) {
@@ -163,7 +182,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
   if (treatmentError && isMissingColumnError(treatmentError, 'treatment_type_id')) {
     const fallback = await supabase
       .from('treatments')
-      .select('id, location_id, patient_id, doctor_id, date, cost, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
+      .select('id, location_id, patient_id, doctor_id, date, cost, doctor_earnings, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
       .eq('patient_id', patientId);
     treatmentRows = (fallback.data || []).map((row: any) => ({ ...row, treatment_type_id: null }));
     treatmentError = fallback.error;
@@ -178,7 +197,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
       .from('payments')
       .select('id, patient_id, payment_date, created_at, amount, cleared_amount, treatment_ids, receipt_snapshot')
       .eq('patient_id', patientId),
-    api.materialCosts.getTotalsByTreatmentIds(treatmentIds)
+    api.materialCosts.getTotalsByTreatmentIds(treatmentIds, { idBatchSize: 50 })
   ]);
   if (paymentError && !isMissingRelationError(paymentError, 'payments')) throw new Error(paymentError.message);
 
@@ -199,7 +218,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
 
   const existingResult = await supabase
     .from('doctor_commission_entries')
-    .select('id, payment_id, treatment_id, commission_rate, calculation_mode, visit_key')
+    .select('id, payment_id, treatment_id, doctor_id, patient_id, location_id, payment_date, treatment_date, visit_key, calculation_mode, allocated_payment, material_deduction, commission_base, commission_rate, earnings')
     .eq('patient_id', patientId);
   const ledgerInstalled = !existingResult.error;
   if (existingResult.error && !isMissingRelationError(existingResult.error, 'doctor_commission_entries')) {
@@ -214,6 +233,7 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     date: row.date,
     cost: Math.max(0, Number(row.cost || 0)),
     materialCost: materialByTreatment[row.id]?.totalAmount || 0,
+    specialDoctorCost: materialByTreatment[row.id]?.specialDoctorTotal || 0,
     commissionType: resolveDoctorCommissionType({
       commissionType: row.commission_type_snapshot ?? row.doctors?.commission_type,
       specialization: row.doctors?.specialization
@@ -231,17 +251,48 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
       ? customRateByDoctorAndType.get(`${row.doctor_id}|${row.treatment_type_id}`)
       : undefined
   }));
-  const payments = (paymentRows || []).map((row: any) => ({
-    id: row.id,
-    patientId: row.patient_id,
-    date: row.payment_date || row.created_at?.slice(0, 10) || '',
-    createdAt: row.created_at,
-    commissionableAmount: getPaymentCommissionableAmount(row),
-    treatmentIds: Array.from(new Set([
+  const treatmentById = new Map(treatments.map((treatment) => [treatment.id, treatment]));
+  const payments = (paymentRows || []).map((row: any) => {
+    const paymentDate = row.payment_date || row.created_at?.slice(0, 10) || '';
+    const treatmentIds = Array.from(new Set([
       ...(Array.isArray(row.treatment_ids) ? row.treatment_ids : []),
       ...getPaymentReceiptTreatmentIds(row)
-    ]))
-  }));
+    ]));
+    const specialDoctorOwner = treatmentIds
+      .map((treatmentId) => treatmentById.get(treatmentId))
+      .find((treatment) => treatment && treatment.date === paymentDate && Number(treatment.specialDoctorCost || 0) > 0);
+    const specialDoctorVisitTotal = specialDoctorOwner
+      ? treatments
+          .filter((treatment) => treatment.patientId === row.patient_id && treatment.date === specialDoctorOwner.date)
+          .reduce((sum, treatment) => sum + Number(treatment.cost || 0), 0)
+      : 0;
+    const paymentForAllocation: PaymentRecord = {
+      id: String(row.id || ''),
+      patientId: String(row.patient_id || ''),
+      amount: Math.max(0, Number(row.amount || 0)),
+      clearedAmount: Math.max(0, Number(row.cleared_amount ?? row.amount ?? 0)),
+      date: paymentDate,
+      type: 'PARTIAL',
+      remainingBalance: 0,
+      receiptSnapshot: normalizePaymentReceiptSnapshot(row.receipt_snapshot)
+    };
+    const standardCommissionableAmount = getPaymentCommissionableAmount(row);
+    const commissionableAmount = specialDoctorVisitTotal > 0
+      ? Math.max(
+          standardCommissionableAmount,
+          Math.min(specialDoctorVisitTotal, getPaymentAvailableTreatmentAmount(paymentForAllocation))
+        )
+      : standardCommissionableAmount;
+
+    return {
+      id: row.id,
+      patientId: row.patient_id,
+      date: paymentDate,
+      createdAt: row.created_at,
+      commissionableAmount,
+      treatmentIds
+    };
+  });
   const allocations = allocateCommissionablePayments(treatments, payments);
   const existingEntries = (existingResult.data || []).map((row: any) => ({
     id: row.id,
@@ -256,10 +307,28 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
   if (ledgerInstalled) {
     const treatmentById = new Map(treatmentRows.map((row: any) => [row.id, row]));
     const desiredKeys = new Set(calculatedEntries.map((entry) => `${entry.paymentId}|${entry.treatmentId}`));
-    if (calculatedEntries.length > 0) {
+    const storedRowsByKey = new Map((existingResult.data || []).map((row: any) => [`${row.payment_id}|${row.treatment_id}`, row]));
+    const entryIsUnchanged = (entry: (typeof calculatedEntries)[number]): boolean => {
+      const stored = storedRowsByKey.get(`${entry.paymentId}|${entry.treatmentId}`);
+      if (!stored) return false;
+      return sameLedgerText(stored.doctor_id, entry.doctorId)
+        && sameLedgerText(stored.patient_id, entry.patientId)
+        && sameLedgerText(stored.location_id, treatmentById.get(entry.treatmentId)?.location_id)
+        && sameLedgerText(stored.payment_date, entry.paymentDate)
+        && sameLedgerText(stored.treatment_date, entry.treatmentDate)
+        && sameLedgerText(stored.visit_key, entry.visitKey)
+        && sameLedgerText(stored.calculation_mode, entry.calculationMode)
+        && sameLedgerMoney(stored.allocated_payment, entry.amount)
+        && sameLedgerMoney(stored.material_deduction, entry.materialDeduction)
+        && sameLedgerMoney(stored.commission_base, entry.commissionBase)
+        && sameLedgerMoney(stored.commission_rate, entry.commissionRate)
+        && sameLedgerMoney(stored.earnings, entry.earnings);
+    };
+    const changedEntries = calculatedEntries.filter((entry) => !entryIsUnchanged(entry));
+    if (changedEntries.length > 0) {
       const { error } = await supabase
         .from('doctor_commission_entries')
-        .upsert(calculatedEntries.map((entry) => ({
+        .upsert(changedEntries.map((entry) => ({
           payment_id: entry.paymentId,
           treatment_id: entry.treatmentId,
           doctor_id: entry.doctorId,
@@ -291,7 +360,14 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     summary[entry.treatmentId] = roundMoney((summary[entry.treatmentId] || 0) + entry.earnings);
     return summary;
   }, {} as Record<string, number>);
-  await Promise.all(treatmentRows.map(async (treatment: any) => {
+  // Only write back treatments whose stored earnings actually differ from the
+  // recalculated total; a cost edit usually shifts one visit group, not history.
+  const earningsChangedTreatments = treatmentRows.filter((treatment: any) => {
+    const targetEarnings = earningsByTreatment[treatment.id] || 0;
+    const storedEarnings = Number(treatment.doctor_earnings);
+    return !Number.isFinite(storedEarnings) || Math.abs(storedEarnings - targetEarnings) >= 0.005;
+  });
+  await Promise.all(earningsChangedTreatments.map(async (treatment: any) => {
     const { error } = await supabase
       .from('treatments')
       .update({ doctor_earnings: earningsByTreatment[treatment.id] || 0 })
@@ -327,6 +403,51 @@ const recalculateDoctorEarningsForTreatments = async (treatmentIds: string[]): P
   if (error) throw new Error(error.message);
   const patientIds = Array.from(new Set((data || []).map((row: any) => row.patient_id).filter(Boolean)));
   await Promise.all(patientIds.map((patientId) => recalculatePatientDoctorCommissions(String(patientId))));
+};
+
+const refreshDoctorDefaultPercentageSnapshots = async (
+  doctorId: string,
+  commissionPercentage: number
+): Promise<void> => {
+  const { data: affectedTreatments, error: affectedTreatmentsError } = await supabase
+    .from('treatments')
+    .select('id, patient_id')
+    .eq('doctor_id', doctorId)
+    .eq('commission_type_snapshot', 'percentage')
+    .eq('commission_source_snapshot', 'doctor_default');
+  if (affectedTreatmentsError) {
+    if (isMissingColumnError(affectedTreatmentsError, 'commission_type_snapshot')) return;
+    throw new Error(affectedTreatmentsError.message);
+  }
+
+  const treatmentIds = (affectedTreatments || []).map((treatment: any) => String(treatment.id)).filter(Boolean);
+  if (treatmentIds.length === 0) return;
+
+  const { error: snapshotUpdateError } = await supabase
+    .from('treatments')
+    .update({
+      commission_percentage_snapshot: commissionPercentage,
+      commission_snapshot_at: new Date().toISOString()
+    })
+    .in('id', treatmentIds);
+  if (snapshotUpdateError) throw new Error(snapshotUpdateError.message);
+
+  // Existing percentage ledger rows are historical input for ordinary payment
+  // corrections. This explicit doctor-rate edit is different: discard only
+  // the affected rows so the recalculation takes its rate from the refreshed
+  // doctor-default treatment snapshots.
+  const { error: ledgerDeleteError } = await supabase
+    .from('doctor_commission_entries')
+    .delete()
+    .in('treatment_id', treatmentIds);
+  if (ledgerDeleteError && !isMissingRelationError(ledgerDeleteError, 'doctor_commission_entries')) {
+    throw new Error(ledgerDeleteError.message);
+  }
+
+  const patientIds = Array.from(new Set((affectedTreatments || [])
+    .map((treatment: any) => String(treatment.patient_id || ''))
+    .filter(Boolean)));
+  await Promise.all(patientIds.map((patientId) => recalculatePatientDoctorCommissions(patientId)));
 };
 
 const resolvePaymentCommissionTreatmentIds = async (payment: PaymentRecord): Promise<string[]> => {
@@ -577,7 +698,7 @@ const mapPatientMaterialCostRow = (row: any): PatientMaterialCost => {
     id: row.id,
     auditLogId: row.audit_log_id,
     materialName: row.material_name,
-    costType: row.cost_type === 'lab' ? 'lab' : 'material',
+    costType: row.cost_type === 'lab' ? 'lab' : row.cost_type === 'special_doctor' ? 'special_doctor' : 'material',
     costAmount,
     quantity,
     totalAmount: Number(row.total_amount ?? costAmount * quantity),
@@ -590,7 +711,7 @@ const mapPatientMaterialCostRow = (row: any): PatientMaterialCost => {
 
 const mapMaterialLabCostPresetRow = (row: any): MaterialLabCostPreset => ({
   id: row.id,
-  costType: row.cost_type === 'lab' ? 'lab' : 'material',
+  costType: row.cost_type === 'lab' ? 'lab' : row.cost_type === 'special_doctor' ? 'special_doctor' : 'material',
   label: String(row.label || ''),
   amount: Number(row.amount || 0),
   sortOrder: Number(row.sort_order || 0),
@@ -644,7 +765,7 @@ const fetchSyntheticMaterialCostExpenses = async (
     const auditLogId = row.audit_log_id;
     if (!auditLogId) return;
 
-    const costType: TreatmentCostType = row.cost_type === 'lab' ? 'lab' : 'material';
+    const costType: TreatmentCostType = row.cost_type === 'lab' ? 'lab' : row.cost_type === 'special_doctor' ? 'special_doctor' : 'material';
     const summaryKey = `${auditLogId}|${costType}`;
     const current = costSummaryByAuditAndType.get(summaryKey) || {
       costType,
@@ -707,7 +828,7 @@ const fetchSyntheticMaterialCostExpenses = async (
   const treatmentById = new Map(treatmentBatches.flat().map((row: any) => [row.id, row]));
   const linkedExpenseKeys = new Set(
     existingExpenses
-      .filter((expense) => ['material_cost', 'lab_cost'].includes(expense.source_type || '') && expense.source_id)
+      .filter((expense) => ['material_cost', 'lab_cost', 'special_doctor_cost'].includes(expense.source_type || '') && expense.source_id)
       .map((expense) => `${expense.source_id}|${expense.source_type}`)
   );
 
@@ -3114,13 +3235,13 @@ export const api = {
 
     getTotalsByTreatmentIds: async (
       treatmentIds: string[],
-      options?: { onProgress?: (completed: number, total: number) => void; requireCostTables?: boolean }
+      options?: { onProgress?: (completed: number, total: number) => void; requireCostTables?: boolean; idBatchSize?: number }
     ): Promise<Record<string, TreatmentCostSummary>> => {
       const uniqueIds = Array.from(new Set(treatmentIds.filter(Boolean)));
       if (uniqueIds.length === 0) return {};
 
       try {
-        const auditIdBatches = chunkUniqueIds(uniqueIds);
+        const auditIdBatches = chunkUniqueIds(uniqueIds, options?.idBatchSize);
         const auditBatches = await mapWithConcurrency(auditIdBatches, REPORT_REQUEST_CONCURRENCY, async (idBatch) => {
           const { data, error: auditLogError } = await supabase
             .from('audit_logs')
@@ -3148,7 +3269,7 @@ export const api = {
           return {};
         }
 
-        const materialIdBatches = chunkUniqueIds(auditIds);
+        const materialIdBatches = chunkUniqueIds(auditIds, options?.idBatchSize);
         const materialBatches = await mapWithConcurrency(materialIdBatches, REPORT_REQUEST_CONCURRENCY, async (auditIdBatch) => {
           let { data, error: materialError } = await supabase
             .from('patient_material_costs')
@@ -3226,10 +3347,10 @@ export const api = {
       const treatmentId = trimRequired(treatment.id, 'Treatment audit row');
       const normalizedItems = items
         .map((item) => ({
-          material_name: trimRequired(item.materialName, item.costType === 'lab' ? 'Lab cost name' : 'Material name', { maxLength: 255 }),
-          cost_type: enumValue(item.costType, ['material', 'lab'] as const, 'Cost type'),
-          cost_amount: finiteNumber(item.costAmount, item.costType === 'lab' ? 'Lab cost' : 'Material cost', { min: 0.01 }),
-          quantity: finiteNumber(item.quantity, item.costType === 'lab' ? 'Lab quantity' : 'Material quantity', { min: 0.01 })
+          material_name: trimRequired(item.materialName, item.costType === 'lab' ? 'Lab cost name' : item.costType === 'special_doctor' ? 'Special doctor name' : 'Material name', { maxLength: 255 }),
+          cost_type: enumValue(item.costType, ['material', 'lab', 'special_doctor'] as const, 'Cost type'),
+          cost_amount: finiteNumber(item.costAmount, item.costType === 'lab' ? 'Lab cost' : item.costType === 'special_doctor' ? 'Special doctor cost' : 'Material cost', { min: 0.01 }),
+          quantity: finiteNumber(item.quantity, item.costType === 'lab' ? 'Lab quantity' : item.costType === 'special_doctor' ? 'Special doctor quantity' : 'Material quantity', { min: 0.01 })
         }))
         .filter((item) => item.material_name);
 
@@ -3267,7 +3388,7 @@ export const api = {
       });
       if (replaceError) {
         if (isMissingRelationError(replaceError, 'replace_treatment_costs') || String(replaceError.message || '').includes('replace_treatment_costs')) {
-          throw new Error('Material & Lab cost migration is not installed yet. Run database/material_and_lab_costs_migration.sql first.');
+          throw new Error('Treatment Costs migration is not installed yet. Run the latest Supabase migrations first.');
         }
         throw new Error(replaceError.message);
       }
@@ -3280,7 +3401,7 @@ export const api = {
         });
       } catch (commissionError) {
         commissionRefreshPending = true;
-        console.error('Material and lab costs were saved, but doctor commission refresh needs retry.', commissionError);
+        console.error('Treatment costs were saved, but doctor commission refresh needs retry.', commissionError);
       }
 
       return {
@@ -3580,6 +3701,7 @@ export const api = {
       dateFrom?: string;
       dateTo?: string;
       doctorId?: string;
+      patientId?: string;
       includeCommissionEntries?: boolean;
       throwOnError?: boolean;
     }): Promise<ClinicalRecord[]> => {
@@ -3599,6 +3721,7 @@ export const api = {
           if (options?.dateFrom) query = query.gte('date', options.dateFrom);
           if (options?.dateTo) query = query.lte('date', options.dateTo);
           if (options?.doctorId) query = query.eq('doctor_id', options.doctorId);
+          if (options?.patientId) query = query.eq('patient_id', options.patientId);
           let { data, error } = await query;
 
           if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
@@ -3612,6 +3735,7 @@ export const api = {
             if (options?.dateFrom) fallbackQuery = fallbackQuery.gte('date', options.dateFrom);
             if (options?.dateTo) fallbackQuery = fallbackQuery.lte('date', options.dateTo);
             if (options?.doctorId) fallbackQuery = fallbackQuery.eq('doctor_id', options.doctorId);
+            if (options?.patientId) fallbackQuery = fallbackQuery.eq('patient_id', options.patientId);
             const fallback = await fallbackQuery;
             data = fallback.data;
             error = fallback.error;
@@ -4376,6 +4500,9 @@ export const api = {
           throw new Error('Transactional doctor commission saving is not installed. Run database/configurable_doctor_commission_migration.sql before saving custom rates.');
         }
         throw new Error(error.message);
+      }
+      if (commissionType === 'percentage') {
+        await refreshDoctorDefaultPercentageSnapshots(doctorId, commissionPercentage);
       }
     },
     getApplicableRate: async (doctorId: string, treatmentId: string): Promise<number> => {

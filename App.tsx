@@ -81,7 +81,7 @@ import { dataCache } from './utils/dataCache';
 import type { SelectedMedicineCharge } from './components/MedicineSelectionModal';
 import { formatPaymentAllocations, formatPaymentMethod, getPaymentAllocationTotal, getPaymentHeaderMethod, isSelectablePaymentMethod, normalizePaymentAllocations, normalizePaymentMethod, PAYMENT_METHOD_OPTIONS, validatePaymentAllocations } from './utils/paymentMethods';
 import { buildLegacyPaymentReceiptSnapshot, buildPaymentReceiptSnapshot, getUncapturedMedicineSalesForReceipt, mergeTreatmentRecordsById, normalizePaymentReceiptSnapshot, removePatientTreatmentRecords, removeTreatmentRecordById } from './utils/paymentReceipt';
-import { hasRecordedServiceFeeForVisit } from './utils/serviceFee';
+import { getSuggestedServiceFeeAmount, hasRecordedServiceFeeForVisit } from './utils/serviceFee';
 import { getPaymentDedupeKey } from './utils/paymentTreatmentAllocation';
 import { validateAuthoritativePaymentTreatments } from './utils/paymentTreatmentValidation';
 import { toLocalDateInputValue } from './utils/patientCreationDate';
@@ -133,6 +133,7 @@ type PaymentDraft = {
 type PaymentServiceFeePreview = {
   category: 'NEW' | 'RETURNING';
   feeAmount: number;
+  hasSuggestedFee: boolean;
 } | null;
 
 type AppointmentDraft = Partial<Appointment> & {
@@ -499,6 +500,7 @@ const App: React.FC = () => {
   const [splitPaymentsAvailable, setSplitPaymentsAvailable] = useState(false);
   const [showPaymentCategoryModal, setShowPaymentCategoryModal] = useState(false);
   const [paymentServiceFeePreview, setPaymentServiceFeePreview] = useState<PaymentServiceFeePreview>(null);
+  const [manualServiceFeeAmount, setManualServiceFeeAmount] = useState('');
   const [showPatientModal, setShowPatientModal] = useState(false);
   const [showAppointmentModal, setShowAppointmentModal] = useState(false);
   const [showTreatmentTypeModal, setShowTreatmentTypeModal] = useState(false);
@@ -2268,6 +2270,32 @@ const App: React.FC = () => {
     }
   };
 
+  // MLS saves only mutate one patient's ledger. Refetching that patient's rows
+  // keeps the save dialog fast instead of reloading every clinic record, expense,
+  // and payment while the user waits for the button.
+  const refreshGlobalRecordsForPatient = async (patientId?: string | null) => {
+    if (!patientId) {
+      await fetchGlobalRecords();
+      return;
+    }
+    try {
+      const records = await api.treatments.getAllRecords(currentLocationId || undefined, {
+        limit: null,
+        patientId
+      });
+      const session = auth.getSession();
+      const scopedRecords = session?.role === 'doctor' && session.doctor_id
+        ? records.filter((record) => record.doctor_id === session.doctor_id)
+        : records;
+      setGlobalRecords((prev) => [...prev.filter((record) => record.patient_id !== patientId), ...scopedRecords].sort((a, b) => (
+        String(b.date || '').localeCompare(String(a.date || '')) || String(a.id || '').localeCompare(String(b.id || ''))
+      )));
+    } catch (err) {
+      console.error('Patient-scoped record refresh failed; falling back to a full reload.', err);
+      await fetchGlobalRecords();
+    }
+  };
+
   const handlePaymentCorrected = async (updatedPayment: PaymentRecord) => {
     const updatedPatientBalance = updatedPayment.patientCurrentBalance ?? updatedPayment.remainingBalance;
     const applyPaymentUpdate = (items: PaymentRecord[]) => {
@@ -2533,18 +2561,11 @@ const App: React.FC = () => {
   };
 
   const resolvePaymentServiceFeePreview = (): PaymentServiceFeePreview => {
-    const shouldApplyServiceFee = clinicalFeeEnabled
-      && (clinicalFeeNewPatientAmount > 0 || clinicalFeeReturningPatientAmount > 0);
-
-    if (!shouldApplyServiceFee || !selectedPatient?.id) {
+    if (!selectedPatient?.id) {
       return null;
     }
 
     const today = toLocalISODate(new Date());
-    if (hasRecordedServiceFeeForVisit(paymentRecords, selectedPatient.id, today)) {
-      return null;
-    }
-
     const hasPreviousCompletedAppointment = appointments.some((appointment) => {
       const patientId = (appointment.patient_id || '').trim();
       return (
@@ -2565,12 +2586,18 @@ const App: React.FC = () => {
     const feeAmount = category === 'RETURNING'
       ? Math.max(0, clinicalFeeReturningPatientAmount)
       : Math.max(0, clinicalFeeNewPatientAmount);
+    const suggestedFeeAmount = getSuggestedServiceFeeAmount({
+      enabled: clinicalFeeEnabled,
+      configuredAmount: feeAmount,
+      hasRecordedFeeForVisit: hasRecordedServiceFeeForVisit(paymentRecords, selectedPatient.id, today)
+    });
+    const hasSuggestedFee = suggestedFeeAmount > 0;
 
-    if (feeAmount <= 0) {
-      return null;
-    }
-
-    return { category, feeAmount };
+    return {
+      category,
+      feeAmount: suggestedFeeAmount,
+      hasSuggestedFee
+    };
   };
 
   const handleOpenPaymentModal = (_treatments: ClinicalRecord[]) => {
@@ -2578,6 +2605,7 @@ const App: React.FC = () => {
 
     if (preview) {
       setPaymentServiceFeePreview(preview);
+      setManualServiceFeeAmount(String(preview.feeAmount));
       setShowPaymentCategoryModal(true);
       return;
     }
@@ -2594,13 +2622,11 @@ const App: React.FC = () => {
     }
 
     const preview = resolvePaymentServiceFeePreview();
-    if (!preview) {
-      alert('Patient service fee is not enabled or the configured fee amount is 0. Please update the Patient Service Fee settings first.');
-      return;
+    if (preview) {
+      setPaymentServiceFeePreview(preview);
+      setManualServiceFeeAmount(String(preview.feeAmount));
+      setShowPaymentCategoryModal(true);
     }
-
-    setPaymentServiceFeePreview(preview);
-    setShowPaymentCategoryModal(true);
   };
 
   const resetAppointmentForm = () => {
@@ -4249,7 +4275,7 @@ const App: React.FC = () => {
                <NavItem icon={<Stethoscope size={18} />} label="Service Menu" active={currentView === 'treatments'} onClick={() => { setCurrentView('treatments'); setIsMobileMenuOpen(false); }} />
              )}
              {canAccessView('material-cost') && (
-                <NavItem icon={<Package size={18} />} label="Material & Lab" active={currentView === 'material-cost'} onClick={() => { setCurrentView('material-cost'); setIsMobileMenuOpen(false); }} />
+                <NavItem icon={<Package size={18} />} label="MLS" active={currentView === 'material-cost'} onClick={() => { setCurrentView('material-cost'); setIsMobileMenuOpen(false); }} />
              )}
              {canAccessView('records') && (
                <NavItem icon={<ClipboardList size={18} />} label={isDoctor ? 'Patient Records' : 'Audit Log'} active={currentView === 'records'} onClick={() => { setRecordsInitialFilter('all'); setCurrentView('records'); setIsMobileMenuOpen(false); }} />
@@ -4323,6 +4349,7 @@ const App: React.FC = () => {
                   patients={patients}
                   locations={locations}
                   activeLocationIds={currentDoctorLocationIds}
+                  onLoadTreatmentCostSummaries={api.materialCosts.getTotalsByTreatmentIds}
                   onSelectPatient={handlePatientSelect}
                   onOpenAppointmentsForDate={handleOpenDoctorAppointmentsForDate}
                 />
@@ -4376,7 +4403,7 @@ const App: React.FC = () => {
                         requireCostTables: true,
                         onProgress: (completed, total) => onProgress({
                           percent: 45 + Math.round((completed / Math.max(total, 1)) * 38),
-                          label: `Loading material & lab costs ${completed}/${total}…`
+                          label: `Loading treatment costs ${completed}/${total}…`
                         })
                       })
                     ]);
@@ -4569,7 +4596,7 @@ const App: React.FC = () => {
             />}
             {currentView === 'doctors' && canAccessView('doctors') && <DoctorsView doctors={doctors} loading={loading} currency={currency} onRefresh={async () => { await fetchInitialData(currentLocationId || undefined); }} onAdd={() => {setEditingDoctor(null); setNewDoctorData({ name: '', email: '', phone: '', specialization: 'General', commission_type: 'percentage', password: '', commission_percentage: 0, commission_per_visit: 0, schedules: [], location_id: currentLocationId || '', location_ids: currentLocationId ? [currentLocationId] : [] }); resetDoctorCommissionEditor(); setShowDoctorModal(true)}} onEdit={(doc) => {setEditingDoctor(doc); setNewDoctorData({ ...doc, location_ids: doc.location_ids || [doc.location_id].filter(Boolean), specialization: doc.specialization || 'General', commission_type: resolveDoctorCommissionType({ commissionType: doc.commission_type, specialization: doc.specialization }), password: '' }); resetDoctorCommissionEditor(); setShowDoctorModal(true)}} onDelete={handleDeleteDoctor} />}
             {currentView === 'treatments' && canAccessView('treatments') && <TreatmentConfigView treatmentTypes={treatmentTypes} currency={currency} loading={loading} onRefresh={async () => { await fetchInitialData(currentLocationId || undefined); }} onAdd={() => {setEditingTreatmentType(null); setNewTreatmentTypeData({ name: '', cost: 0, category: '' }); setShowTreatmentTypeModal(true)}} onEdit={(t) => {setEditingTreatmentType(t); setNewTreatmentTypeData(t); setShowTreatmentTypeModal(true)}} onDelete={(id) => { const treatment = treatmentTypes.find(t => t.id === id); if (treatment) { setServiceToDelete({ id: treatment.id, name: treatment.name }); setDeleteServiceConfirmOpen(true); } }} />}
-            {currentView === 'material-cost' && canAccessView('material-cost') && <MaterialCostView records={globalRecords} paymentRecords={paymentRecords} loading={loading} currency={currency} canManageMaterials={canManageMaterialCosts(session?.role, session?.allowed_tabs)} onRefresh={async () => { await fetchGlobalRecords(); await fetchExpenses(); await fetchDashboardData(dashboardLocationId === ALL_BRANCHES_VALUE ? undefined : dashboardLocationId); }} />}
+            {currentView === 'material-cost' && canAccessView('material-cost') && <MaterialCostView records={globalRecords} paymentRecords={paymentRecords} loading={loading} currency={currency} canManageMaterials={canManageMaterialCosts(session?.role, session?.allowed_tabs)} onRefresh={async () => { await fetchGlobalRecords(); await fetchExpenses(); await fetchDashboardData(dashboardLocationId === ALL_BRANCHES_VALUE ? undefined : dashboardLocationId); }} onCostsSaved={async (patientId) => { await refreshGlobalRecordsForPatient(patientId); void fetchExpenses(); void fetchDashboardData(dashboardLocationId === ALL_BRANCHES_VALUE ? undefined : dashboardLocationId).catch(() => { console.warn('Dashboard refresh after MLS cost save needs a manual refresh.'); }); }} />}
             {currentView === 'records' && canAccessView('records') && <RecordsView records={auditRecords} appointments={auditAppointments} rescheduleLogs={auditRescheduleLogs} payments={auditPayments} loading={auditLoading} loadError={auditLoadError} onQueryChange={loadAuditLog} onRefresh={() => setAuditRefreshKey((key) => key + 1)} onDeleteAll={isDoctor ? () => alert('Doctor accounts cannot delete patient records.') : handleDeleteAllRecords} currency={currency} isDoctor={isDoctor} initialFilter={recordsInitialFilter} onOpenPaymentReceipt={handleOpenStoredPaymentReceipt} canEditPayments={isAdmin && !isDoctor} onPaymentCorrected={handlePaymentCorrected} />}
             {currentView === 'inventory' && canAccessView('inventory') && <InventoryView medicines={medicines} topSelling={topSellingMedicines} loading={loading} currency={currency} onRefresh={async () => { await fetchInitialData(currentLocationId || undefined); }} onAdd={() => {setEditingMedicine(null); setNewMedicineData({ name: '', description: '', unit: 'pack', item_type: 'Medicine', price: 0, stock: 0, min_stock: 0, quantity_step: 1, category: '' }); setShowMedicineModal(true)}} onEdit={(med) => {setEditingMedicine(med); setNewMedicineData(med); setShowMedicineModal(true)}} onDelete={handleDeleteMedicine} />}
             {currentView === 'expenses' && canAccessView('expenses') && (
@@ -5470,7 +5497,7 @@ const App: React.FC = () => {
                   />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-medium">{usesFlatVisitCommission({ commissionType: newDoctorData.commission_type, specialization: newDoctorData.specialization }) ? getCurrencySymbol(currency) : '%'}</span>
                 </div>
-                <p className="mt-1 text-xs text-gray-400">{usesFlatVisitCommission({ commissionType: newDoctorData.commission_type, specialization: newDoctorData.specialization }) ? 'Fixed amount paid once per patient visit.' : 'Percentage of collected treatment fees after material and lab costs.'}</p>
+                <p className="mt-1 text-xs text-gray-400">{usesFlatVisitCommission({ commissionType: newDoctorData.commission_type, specialization: newDoctorData.specialization }) ? 'Fixed amount paid once per patient visit.' : 'Percentage of collected treatment fees after treatment costs.'}</p>
                 <button
                   type="button"
                   onClick={() => {
@@ -6050,6 +6077,7 @@ const App: React.FC = () => {
               onClick={() => {
                 setShowPaymentCategoryModal(false);
                 setPaymentServiceFeePreview(null);
+                setManualServiceFeeAmount('');
               }}
               className="absolute right-6 top-6 text-gray-300 transition-colors hover:text-gray-900"
             >
@@ -6083,21 +6111,59 @@ const App: React.FC = () => {
 
               <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-5 text-left shadow-sm">
                 <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-700">
-                  {paymentServiceFeePreview?.category === 'RETURNING' ? 'Old Patient' : 'New Patient'}
+                  {paymentServiceFeePreview?.hasSuggestedFee
+                    ? paymentServiceFeePreview.category === 'RETURNING' ? 'Old Patient' : 'New Patient'
+                    : 'Manual fee entry'}
                 </p>
                 <p className="mt-2 text-3xl font-black text-slate-950">
                   {formatCurrency(paymentServiceFeePreview?.feeAmount || 0, currency)}
                 </p>
                 <p className="mt-2 text-sm text-slate-600">
-                  {paymentServiceFeePreview?.category === 'RETURNING'
-                    ? 'A previous completed visit or treatment was found, so the old-patient service fee will be added.'
-                    : 'No previous completed visit or treatment was found, so the new-patient service fee will be added.'}
+                  {paymentServiceFeePreview?.hasSuggestedFee
+                    ? paymentServiceFeePreview.category === 'RETURNING'
+                      ? 'A previous completed visit or treatment was found, so the old-patient service fee is suggested.'
+                      : 'No previous completed visit or treatment was found, so the new-patient service fee is suggested.'
+                    : 'No automatic service fee is suggested. Enter a manual amount only when an additional charge is required.'}
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-left">
+                <label htmlFor="manual-service-fee" className="block text-sm font-black text-amber-900">
+                  Manual service fee for this patient
+                </label>
+                <p className="mt-1 text-xs font-medium leading-relaxed text-amber-800">
+                  Optional. This changes only this payment; clinic service-fee settings and future patients are not changed.
+                </p>
+                <div className="mt-3 flex items-center gap-3">
+                  <input
+                    id="manual-service-fee"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={manualServiceFeeAmount}
+                    onChange={(event) => setManualServiceFeeAmount(event.target.value)}
+                    className="min-w-0 flex-1 rounded-xl border border-amber-300 bg-white px-4 py-3 text-lg font-bold text-slate-950 outline-none transition focus:border-amber-500 focus:ring-4 focus:ring-amber-100"
+                    aria-describedby="manual-service-fee-help"
+                  />
+                  {paymentServiceFeePreview?.hasSuggestedFee ? (
+                    <button
+                      type="button"
+                      onClick={() => setManualServiceFeeAmount(String(paymentServiceFeePreview.feeAmount))}
+                      className="rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm font-bold text-amber-900 transition hover:bg-amber-100"
+                    >
+                      Use default
+                    </button>
+                  ) : null}
+                </div>
+                <p id="manual-service-fee-help" className="mt-2 text-xs font-semibold text-amber-800">
+                  Enter 0 to waive the fee, a lower amount for hardship, or a higher amount for an additional charge.
                 </p>
               </div>
             </div>
 
             <div className="px-8 pb-8 space-y-3">
-              {paymentServiceFeePreview?.category === 'RETURNING' ? (
+              {paymentServiceFeePreview?.hasSuggestedFee && paymentServiceFeePreview.category === 'RETURNING' ? (
                 <>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {Math.max(0, clinicalFeeNewPatientAmount) > 0 ? (
@@ -6132,6 +6198,7 @@ const App: React.FC = () => {
                     onClick={() => {
                       setShowPaymentCategoryModal(false);
                       setPaymentServiceFeePreview(null);
+                      setManualServiceFeeAmount('');
                       openPaymentModalWithCategory(null, 0);
                     }}
                     className="w-full px-6 py-3.5 rounded-xl font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 hover:text-gray-700 transition-all active:scale-[0.98]"
@@ -6139,13 +6206,14 @@ const App: React.FC = () => {
                     Continue Without Service Fee
                   </button>
                 </>
-              ) : (
+              ) : paymentServiceFeePreview?.hasSuggestedFee ? (
                 <div className="flex gap-3">
                   <button
                     type="button"
                     onClick={() => {
                       setShowPaymentCategoryModal(false);
                       setPaymentServiceFeePreview(null);
+                      setManualServiceFeeAmount('');
                       openPaymentModalWithCategory(null, 0);
                     }}
                     className="flex-1 px-6 py-3.5 rounded-xl font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 hover:text-gray-700 transition-all active:scale-[0.98]"
@@ -6158,14 +6226,33 @@ const App: React.FC = () => {
                       const preview = paymentServiceFeePreview;
                       setShowPaymentCategoryModal(false);
                       setPaymentServiceFeePreview(null);
+                      setManualServiceFeeAmount('');
                       openPaymentModalWithCategory(preview?.category || null, preview?.feeAmount || 0);
                     }}
                     className="flex-1 px-6 py-3.5 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-600/25 transition-all active:scale-[0.98]"
                   >
-                    Continue With Service Fee
+                    Continue With This Fee
                   </button>
                 </div>
-              )}
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  const preview = paymentServiceFeePreview;
+                  const enteredFeeAmount = Number(manualServiceFeeAmount);
+                  if (!Number.isFinite(enteredFeeAmount) || enteredFeeAmount < 0) {
+                    alert('Manual service fee must be a valid amount of 0 or more.');
+                    return;
+                  }
+                  setShowPaymentCategoryModal(false);
+                  setPaymentServiceFeePreview(null);
+                  setManualServiceFeeAmount('');
+                  openPaymentModalWithCategory(preview?.category || null, enteredFeeAmount);
+                }}
+                className="w-full rounded-xl bg-amber-600 px-6 py-3.5 font-bold text-white shadow-lg shadow-amber-600/20 transition-all hover:bg-amber-700 active:scale-[0.98]"
+              >
+                Continue With Manual Fee
+              </button>
             </div>
           </div>
         </div>

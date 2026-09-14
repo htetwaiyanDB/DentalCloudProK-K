@@ -30,26 +30,34 @@ export const dedupePaymentRecords = (payments: PaymentRecord[]): PaymentRecord[]
   Array.from(new Map(payments.map((payment) => [getPaymentDedupeKey(payment), payment])).values())
 );
 
-export const getPaymentTreatmentShare = (payment: PaymentRecord): number => {
+export const getPaymentAvailableTreatmentAmount = (payment: PaymentRecord): number => {
   const collected = positiveMoney(payment.clearedAmount ?? payment.amount);
   const snapshot = payment.receiptSnapshot;
   if (!snapshot) return roundMoney(Math.max(0, collected - getPaymentServiceFeeAmount(payment)));
 
-  const treatmentValue = (snapshot.treatments || []).reduce(
-    (sum, item) => sum + positiveMoney(item.finalCost),
-    0
-  );
   const medicineValue = (snapshot.medicines || []).reduce(
     (sum, item) => sum + positiveMoney(item.totalPrice),
     0
   );
   const serviceFee = positiveMoney(snapshot.payment.serviceFeeAmount);
-  const hasPricedReceiptLines = treatmentValue + medicineValue > 0;
+  return roundMoney(Math.max(0, collected - serviceFee - medicineValue));
+};
 
-  // A populated receipt snapshot is the immutable source of truth for mixed
-  // receipts. Legacy/partial snapshots without priced lines retain the older
-  // service-fee-only fallback instead of making the whole payment disappear.
-  return hasPricedReceiptLines
-    ? roundMoney(Math.min(treatmentValue, Math.max(0, collected - serviceFee - medicineValue)))
-    : roundMoney(Math.max(0, collected - serviceFee));
+export const getPaymentTreatmentShare = (payment: PaymentRecord): number => {
+  const snapshot = payment.receiptSnapshot;
+  const availableAfterNonTreatmentCharges = getPaymentAvailableTreatmentAmount(payment);
+  if (!snapshot) return availableAfterNonTreatmentCharges;
+
+  const treatmentValue = (snapshot.treatments || []).reduce(
+    (sum, item) => sum + positiveMoney(item.finalCost),
+    0
+  );
+
+  // Explicit treatment lines cap the commissionable share. Some legacy mixed
+  // receipts saved medicine lines but omitted their treatment lines; in that
+  // case the amount left after medicines and service fees is still the paid
+  // treatment balance. A medicine-only receipt naturally leaves zero here.
+  return treatmentValue > 0
+    ? roundMoney(Math.min(treatmentValue, availableAfterNonTreatmentCharges))
+    : roundMoney(availableAfterNonTreatmentCharges);
 };

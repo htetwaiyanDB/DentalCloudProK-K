@@ -133,6 +133,28 @@ describe('paymentReceipt', () => {
     });
   });
 
+  it('preserves a manually adjusted service fee in the payment receipt snapshot', () => {
+    const snapshot = buildPaymentReceiptSnapshot({
+      patient: { id: 'patient-1', location_id: 'branch-1', name: 'Aye Aye', email: '', phone: '', balance: 0, loyalty_points: 0 },
+      amountPaid: 7_500,
+      paymentMethod: 'CASH',
+      paymentDate: '2026-09-11',
+      receiptNumber: 'REC-MANUAL-FEE',
+      balanceBefore: 7_500,
+      balanceAfter: 0,
+      paymentStatus: 'FULL',
+      serviceFeeAmount: 7_500,
+      serviceFeeCategory: 'RETURNING',
+      clinic
+    });
+
+    expect(snapshot.payment).toMatchObject({
+      amountPaid: 7_500,
+      serviceFeeAmount: 7_500,
+      serviceFeeCategory: 'RETURNING'
+    });
+  });
+
   it('keeps separately saved treatments and replaces duplicates by treatment ID', () => {
     const record = (id: string, cost: number): ClinicalRecord => ({
       id, location_id: 'branch-1', patient_id: 'patient-1', teeth: [], description: id, cost, date: '2026-08-04'

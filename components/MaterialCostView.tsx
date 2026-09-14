@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeftRight, Beaker, History, Loader2, Package, Plus, RotateCw, Search } from 'lucide-react';
+import { ArrowLeftRight, Beaker, History, Loader2, Package, Plus, RotateCw, Search, Stethoscope } from 'lucide-react';
 import type { ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
 import { api } from '../services/api';
 import { formatCurrency, type Currency } from '../utils/currency';
@@ -25,6 +25,9 @@ interface MaterialCostViewProps {
   currency: Currency;
   canManageMaterials: boolean;
   onRefresh: () => void | Promise<void>;
+  // Optional fast path after a cost save: refresh only the affected patient's
+  // rows instead of reloading every clinic record, payment, and dashboard metric.
+  onCostsSaved?: (patientId?: string | null) => Promise<void> | void;
 }
 
 type TreatmentAuditRow = Extract<AuditExportRow, { kind: 'treatment' }>;
@@ -36,7 +39,7 @@ const getTreatmentRecordIds = (record: ClinicalRecord & { _groupedRecords?: Clin
   return groupedRecords.map((item) => item.id).filter(Boolean);
 };
 
-const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh }) => {
+const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh, onCostsSaved }) => {
   const summaryRequestVersion = React.useRef(0);
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -162,8 +165,8 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     }, 0);
   };
 
-  const getTypedCostTotal = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab') => {
-    const key = costType === 'lab' ? 'labTotal' : 'materialTotal';
+  const getTypedCostTotal = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab' | 'special_doctor') => {
+    const key = costType === 'lab' ? 'labTotal' : costType === 'special_doctor' ? 'specialDoctorTotal' : 'materialTotal';
     return getTreatmentRecordIds(record).reduce((sum, treatmentId) => sum + Number(materialSummaries[treatmentId]?.[key] || 0), 0);
   };
 
@@ -239,19 +242,20 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     };
   }, [loading]);
 
-  const renderTypedCost = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab') => {
+  const renderTypedCost = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab' | 'special_doctor') => {
     const totalAmount = getTypedCostTotal(record, costType);
     if (totalAmount <= 0) return <span className="text-slate-400">-</span>;
     const isLab = costType === 'lab';
+    const isSpecialDoctor = costType === 'special_doctor';
     return (
-      <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-black ${isLab ? 'border-violet-100 bg-violet-50 text-violet-700' : 'border-cyan-100 bg-cyan-50 text-cyan-700'}`}>
-        {isLab ? <Beaker size={13} /> : <Package size={13} />}
+      <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-black ${isLab ? 'border-violet-100 bg-violet-50 text-violet-700' : isSpecialDoctor ? 'border-amber-100 bg-amber-50 text-amber-700' : 'border-cyan-100 bg-cyan-50 text-cyan-700'}`}>
+        {isLab ? <Beaker size={13} /> : isSpecialDoctor ? <Stethoscope size={13} /> : <Package size={13} />}
         {formatCurrency(totalAmount, currency)}
       </span>
     );
   };
 
-  const handleMaterialSaved = async (summary: TreatmentCostSummary & { treatmentId: string }) => {
+  const handleMaterialSaved = async (summary: TreatmentCostSummary & { treatmentId: string; patientId?: string | null }) => {
     setMaterialSummaries((current) => {
       const next = { ...current };
       if (summary.itemCount > 0 && summary.totalAmount > 0) {
@@ -262,14 +266,22 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
           materialTotal: summary.materialTotal,
           materialItemCount: summary.materialItemCount,
           labTotal: summary.labTotal,
-          labItemCount: summary.labItemCount
+          labItemCount: summary.labItemCount,
+          specialDoctorTotal: summary.specialDoctorTotal,
+          specialDoctorItemCount: summary.specialDoctorItemCount
         };
       } else {
         delete next[summary.treatmentId];
       }
       return next;
     });
-    await onRefresh();
+    if (onCostsSaved) {
+      // Saves only change one patient's ledger, so refresh that patient's rows
+      // instead of awaiting a full clinic-wide reload before closing the modal.
+      await onCostsSaved(summary.patientId);
+    } else {
+      await onRefresh();
+    }
     await loadMaterialSummaries(paginatedRows);
   };
 
@@ -279,8 +291,8 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     try {
       await onRefresh();
     } catch (error) {
-      console.error('Failed to refresh material and lab costs:', error);
-      alert(error instanceof Error ? error.message : 'Unable to refresh material and lab costs. Please try again.');
+      console.error('Failed to refresh treatment costs:', error);
+      alert(error instanceof Error ? error.message : 'Unable to refresh treatment costs. Please try again.');
     } finally {
       setIsRefreshing(false);
     }
@@ -335,9 +347,9 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
             </div>
             <div className="min-w-0 flex-1">
               <p className="mb-1 text-[10px] font-black uppercase tracking-[0.2em] theme-accent-text sm:text-[11px] sm:tracking-[0.24em]">Service Menu</p>
-              <h2 className="break-words text-xl font-bold text-slate-900 sm:text-2xl">Material & Lab</h2>
+              <h2 className="break-words text-xl font-bold text-slate-900 sm:text-2xl">MLS Costs</h2>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500 sm:text-sm">
-                Track material and lab costs against completed treatment rows.
+                Track Material, Lab & Special Cost items against completed treatment rows.
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 <div className="flex max-w-full gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
@@ -352,7 +364,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                   type="button"
                   onClick={() => void handleRefresh()}
                   disabled={loading || isRefreshing}
-                  aria-label={isRefreshing ? 'Refreshing material and lab costs' : 'Refresh material and lab costs'}
+                  aria-label={isRefreshing ? 'Refreshing treatment costs' : 'Refresh treatment costs'}
                   className="refresh-action-button inline-flex min-h-9 items-center justify-center gap-2 rounded-xl border px-3 py-1.5 font-bold focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)]"
                 >
                   <RotateCw size={14} className={`refresh-action-icon ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -484,7 +496,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
       {loading ? (
         <div className="flex flex-col items-center justify-center gap-3 p-12 text-slate-500">
           <Loader2 className="animate-spin text-[var(--hover-600)]" />
-          <p className="text-sm font-medium">Loading material, lab, and payment rows...</p>
+          <p className="text-sm font-medium">Loading treatment cost and payment rows...</p>
         </div>
       ) : activeTab === 'payments' ? (
         <MaterialPaymentHistory rows={paymentHistoryRows} currency={currency} />
@@ -506,7 +518,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
           <div
             ref={tableScrollRef}
             role="region"
-            aria-label="Material and lab cost table"
+            aria-label="Treatment cost table"
             aria-describedby={isTableScrollable ? 'material-cost-scroll-instructions' : undefined}
             tabIndex={isTableScrollable ? 0 : -1}
             className="overflow-x-auto focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--hover-300)]"
@@ -523,6 +535,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Collected Payment</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Material Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Lab Cost</th>
+                <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Special Doctor Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Total Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Net Receive</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Doctor Earned</th>
@@ -533,7 +546,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
             <tbody className="divide-y divide-slate-100 bg-white">
               {statusFilteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="px-6 py-12 text-center">
+                  <td colSpan={15} className="px-6 py-12 text-center">
                     <div className="mx-auto max-w-sm rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6">
                       <p className="text-sm font-semibold text-slate-600">No treatment rows found</p>
                       <p className="mt-1 text-xs text-slate-400">Try another date range or clear the search field.</p>
@@ -564,6 +577,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       <td className="px-4 py-4 text-right text-sm font-black text-blue-700 xl:px-6">{collectedAmount > 0 ? formatCurrency(collectedAmount, currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'material')}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'lab')}</td>
+                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'special_doctor')}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-slate-800 xl:px-6">{getMaterialTotal(record) > 0 ? formatCurrency(getMaterialTotal(record), currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-teal-700 xl:px-6">{collectedAmount > 0 ? formatCurrency(netReceive, currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold text-emerald-700 xl:px-6">{adjustedDoctorEarned > 0 ? formatCurrency(adjustedDoctorEarned, currency) : '-'}</td>
@@ -577,7 +591,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                           >
                             <Package size={13} />
                             <Plus size={12} />
-                            Material & Lab
+                            MLS Costs
                           </button>
                         ) : (
                           <span className="text-xs font-semibold text-slate-400">No access</span>
@@ -649,6 +663,10 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-violet-700">Lab cost</dt>
                         <dd className="mt-1 text-sm font-bold">{renderTypedCost(record, 'lab')}</dd>
                       </div>
+                      <div className="min-w-0 rounded-xl border border-amber-100 bg-amber-50 p-3">
+                        <dt className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Special doctor cost</dt>
+                        <dd className="mt-1 text-sm font-bold">{renderTypedCost(record, 'special_doctor')}</dd>
+                      </div>
                       <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-100 p-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-600">Total cost</dt>
                         <dd className="mt-1 break-words text-sm font-black text-slate-800">{totalCost > 0 ? formatCurrency(totalCost, currency) : '-'}</dd>
@@ -672,7 +690,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                         >
                           <Package size={15} />
                           <Plus size={13} />
-                          Material & Lab
+                          MLS Costs
                         </button>
                       ) : (
                         <p className="rounded-xl bg-slate-50 px-3 py-2 text-center text-xs font-semibold text-slate-400">No access to manage costs</p>

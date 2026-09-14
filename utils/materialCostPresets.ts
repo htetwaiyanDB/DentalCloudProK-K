@@ -46,7 +46,7 @@ export const normalizeMaterialCostPresetInputs = (
     if (!UUID_PATTERN.test(id)) throw new Error(`Preset ${index + 1} has an invalid identifier.`);
     if (seenIds.has(id)) throw new Error('Each preset must have a unique identifier.');
     seenIds.add(id);
-    if (costType !== 'material' && costType !== 'lab') throw new Error(`Preset ${index + 1} needs a valid category.`);
+    if (costType !== 'material' && costType !== 'lab' && costType !== 'special_doctor') throw new Error(`Preset ${index + 1} needs a valid category.`);
     if (!label) throw new Error(`Preset ${index + 1} needs a label.`);
     if (label.length > 255) throw new Error(`Preset ${index + 1} label must be 255 characters or fewer.`);
     if (!Number.isFinite(amount) || roundedAmount <= 0 || roundedAmount > MAX_AMOUNT) {

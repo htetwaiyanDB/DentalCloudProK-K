@@ -104,6 +104,24 @@ describe('doctor commission ledger', () => {
     ]);
   });
 
+  it('applies an unlinked same-day payment to the current visit before old debt', () => {
+    const treatments = [
+      treatment({ id: 'old', date: '2026-09-07', cost: 75_000, commissionPercentage: 100 }),
+      treatment({ id: 'current', date: '2026-09-12', cost: 150_000, commissionPercentage: 100 })
+    ];
+    const allocations = allocateCommissionablePayments(treatments, [{
+      id: 'payment-current', patientId: 'patient-1', date: '2026-09-12',
+      commissionableAmount: 75_000, treatmentIds: []
+    }]);
+
+    expect(allocations).toEqual([
+      expect.objectContaining({ treatmentId: 'current', amount: 75_000 })
+    ]);
+    expect(calculateCommissionLedgerEntries(treatments, allocations)[0]).toMatchObject({
+      treatmentId: 'current', earnings: 75_000
+    });
+  });
+
   it('does not reassign a payment when its explicit treatment is unavailable', () => {
     const allocations = allocateCommissionablePayments([
       treatment({ id: 'visible-treatment', cost: 100_000 })
@@ -314,6 +332,32 @@ describe('doctor commission ledger', () => {
     expect(entries).toEqual([
       expect.objectContaining({ treatmentId: 't1', commissionBase: 60_000, earnings: 6_000 }),
       expect.objectContaining({ treatmentId: 't2', commissionBase: 60_000, earnings: 6_000 })
+    ]);
+  });
+
+  it('credits a special-doctor-cost visit to its main commission doctor', () => {
+    const treatments = [
+      treatment({
+        id: 'main-treatment', doctorId: 'main-doctor', date: '2026-09-12', cost: 30_000,
+        commissionPercentage: 50, materialCost: 100_000, specialDoctorCost: 100_000
+      }),
+      treatment({
+        id: 'outside-doctor-treatment', doctorId: 'outside-doctor', date: '2026-09-12',
+        cost: 200_000, commissionPercentage: 0
+      })
+    ];
+    const allocations = allocateCommissionablePayments(treatments, [{
+      id: 'payment-visit', patientId: 'patient-1', date: '2026-09-12',
+      commissionableAmount: 230_000, treatmentIds: ['main-treatment', 'outside-doctor-treatment']
+    }]);
+    const entries = calculateCommissionLedgerEntries(treatments, allocations);
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        treatmentId: 'main-treatment', doctorId: 'main-doctor',
+        amount: 230_000, materialDeduction: 100_000, commissionBase: 130_000,
+        commissionRate: 50, earnings: 65_000
+      })
     ]);
   });
 

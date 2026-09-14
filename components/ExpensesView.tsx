@@ -187,6 +187,7 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
       'Salary': 'bg-indigo-100 text-indigo-700 border-indigo-200',
       'Material Cost': 'bg-cyan-100 text-cyan-700 border-cyan-200',
       'Lab Cost': 'bg-violet-100 text-violet-700 border-violet-200',
+      'Special Doctor Cost': 'bg-amber-100 text-amber-700 border-amber-200',
     };
     return colors[category] || 'bg-gray-100 text-gray-700 border-gray-200';
   };
