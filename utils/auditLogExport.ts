@@ -3,7 +3,7 @@ import { Currency, formatCurrency } from './currency';
 import { filterAuditRowsByDateRange } from './auditLogFilters';
 import { formatTeethArray, formatTeethWithPosition } from './toothNumbering';
 import { formatPaymentAllocations, formatPaymentMethod } from './paymentMethods';
-import { formatDoctorName } from './doctorName';
+import { formatDoctorName, normalizeDoctorName } from './doctorName';
 import { allocateCommissionablePayments, calculateCommissionLedgerEntries } from './doctorCommissionLedger';
 import { getPaymentTreatmentIds, getPaymentTreatmentShare } from './paymentTreatmentAllocation';
 
@@ -181,6 +181,13 @@ export const buildAuditLogRows = (
     const totalStandardCost = sorted.reduce((sum, record) => sum + getPositiveNumber(record.standardCost ?? record.cost), 0);
     const totalEarnings = sorted.reduce((sum, record) => sum + (record.doctorEarnings || 0), 0);
     const patientType = sorted.find((record) => (record.patient_type || '').trim())?.patient_type || base.patient_type || null;
+    const doctorNames = Array.from(new Map(
+      sorted
+        .map((record) => normalizeDoctorName(record.doctor_name))
+        .filter(Boolean)
+        .map((name) => [name.toLocaleLowerCase(), name])
+    ).values());
+    const doctorIds = [...new Set(sorted.map((record) => record.doctor_id).filter(Boolean))];
 
     base.description = allDescriptions.join(' + ');
     base.teeth = [...new Set(allTeeth)].sort((a, b) => a - b);
@@ -189,6 +196,8 @@ export const buildAuditLogRows = (
     base.discountAmount = totalDiscount;
     base.doctorEarnings = totalEarnings > 0 ? totalEarnings : base.doctorEarnings;
     base.patient_type = patientType;
+    base.doctor_name = doctorNames.length > 0 ? doctorNames.join(', Dr. ') : undefined;
+    base.doctor_id = doctorIds.length === 1 ? doctorIds[0] : undefined;
     base.serviceCharges = calculateTreatmentServiceCharges(sorted, visiblePayments, appointments);
     base._groupedRecords = sorted;
 

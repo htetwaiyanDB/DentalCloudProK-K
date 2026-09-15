@@ -159,6 +159,61 @@ describe('audit log export rows', () => {
     }
   });
 
+  it('keeps an assigned doctor visible when the first grouped treatment is unassigned', () => {
+    const rows = buildAuditLogRows([
+      {
+        ...records[0],
+        id: 'tr-unassigned',
+        doctor_id: undefined,
+        doctor_name: undefined,
+        description: 'Consultation'
+      },
+      {
+        ...records[1],
+        id: 'tr-assigned',
+        doctor_id: 'doc-1',
+        doctor_name: 'Hnin',
+        description: 'Scaling'
+      }
+    ], [], false);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe('treatment');
+    if (rows[0].kind === 'treatment') {
+      expect(rows[0].record.doctor_id).toBe('doc-1');
+      expect(rows[0].record.doctor_name).toBe('Hnin');
+    }
+  });
+
+  it('shows every unique doctor assigned to a grouped visit', () => {
+    const rows = buildAuditLogRows([
+      { ...records[0], doctor_id: 'doc-1', doctor_name: 'Dr. Hnin' },
+      { ...records[1], doctor_id: 'doc-2', doctor_name: 'Ko Ko' },
+      { ...records[1], id: 'tr-duplicate-doctor', doctor_id: 'doc-1', doctor_name: 'Hnin' }
+    ], [], false);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe('treatment');
+    if (rows[0].kind === 'treatment') {
+      expect(rows[0].record.doctor_id).toBeUndefined();
+      expect(rows[0].record.doctor_name).toBe('Hnin, Dr. Ko Ko');
+    }
+  });
+
+  it('leaves a grouped visit unassigned when none of its treatments has a doctor', () => {
+    const rows = buildAuditLogRows([
+      { ...records[0], doctor_id: undefined, doctor_name: undefined },
+      { ...records[1], doctor_id: undefined, doctor_name: '  ' }
+    ], [], false);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe('treatment');
+    if (rows[0].kind === 'treatment') {
+      expect(rows[0].record.doctor_id).toBeUndefined();
+      expect(rows[0].record.doctor_name).toBeUndefined();
+    }
+  });
+
   it('repairs legacy Unknown reschedule names from the matching appointment', () => {
     const rows = buildAuditLogRows(records, appointments, true, [], [
       {
