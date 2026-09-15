@@ -13,7 +13,7 @@ export type AuditExportRow =
   | { kind: 'treatment'; sortDate: string; record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] } }
   | { kind: 'appointment'; sortDate: string; appointment: Appointment }
   | { kind: 'reschedule'; sortDate: string; rescheduleLog: AppointmentRescheduleLog }
-  | { kind: 'payment'; sortDate: string; payment: PaymentRecord & { _treatmentDiscountAmount?: number } };
+  | { kind: 'payment'; sortDate: string; payment: PaymentRecord & { _treatmentDiscountAmount?: number; _doctorName?: string } };
 
 export interface AuditLogFilterOptions {
   auditFilter?: AuditFilter;
@@ -273,20 +273,34 @@ export const buildAuditLogRows = (
     );
   });
   const paymentRows: AuditExportRow[] = includeAppointments
-    ? visiblePayments.map((payment) => ({
-        kind: 'payment',
-        sortDate: payment.createdAt || `${payment.date || ''}T23:59:58`,
-        payment: {
-          ...payment,
-          _treatmentDiscountAmount: [...new Set(payment.treatmentIds || [])].reduce(
-            (sum, treatmentId) => sum + getTreatmentDiscount(treatmentById.get(treatmentId)),
-            0
-          ),
-          doctorEarned: doctorEarningsByPayment.has(payment.id)
-            ? doctorEarningsByPayment.get(payment.id) || 0
-            : fallbackDoctorEarningsByPayment.get(payment.id) || 0
-        }
-      }))
+    ? visiblePayments.map((payment) => {
+        const linkedTreatmentIds = getPaymentTreatmentIds(payment);
+        const relatedTreatments = linkedTreatmentIds.length > 0
+          ? linkedTreatmentIds.map((treatmentId) => treatmentById.get(treatmentId)).filter((record): record is ClinicalRecord => Boolean(record))
+          : records.filter((record) => record.patient_id === payment.patientId && record.date === payment.date);
+        const doctorNames = Array.from(new Map(
+          relatedTreatments
+            .map((record) => normalizeDoctorName(record.doctor_name))
+            .filter(Boolean)
+            .map((name) => [name.toLocaleLowerCase(), name])
+        ).values());
+
+        return {
+          kind: 'payment',
+          sortDate: payment.createdAt || `${payment.date || ''}T23:59:58`,
+          payment: {
+            ...payment,
+            _doctorName: doctorNames.length > 0 ? doctorNames.join(', Dr. ') : undefined,
+            _treatmentDiscountAmount: relatedTreatments.reduce(
+              (sum, treatment) => sum + getTreatmentDiscount(treatment),
+              0
+            ),
+            doctorEarned: doctorEarningsByPayment.has(payment.id)
+              ? doctorEarningsByPayment.get(payment.id) || 0
+              : fallbackDoctorEarningsByPayment.get(payment.id) || 0
+          }
+        };
+      })
     : [];
 
   const appointmentById = new Map(appointments.map((appointment) => [appointment.id, appointment]));
@@ -342,6 +356,7 @@ export const filterAuditLogRowsForExport = <T extends AuditExportRow>(rows: T[],
       const payment = row.payment;
       return (
         (payment.patient_name || '').toLowerCase().includes(term) ||
+        (payment._doctorName || '').toLowerCase().includes(term) ||
         (payment.createdByUserName || '').toLowerCase().includes(term) ||
         (payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)).toLowerCase().includes(term) ||
         (payment.receiptNumber || '').toLowerCase().includes(term) ||
@@ -423,7 +438,7 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
         type: 'Payment',
         dateTime: formatAuditCreatedAt(payment.createdAt || payment.date),
         patient: payment.patient_name || 'Unknown',
-        clinician: '-',
+        clinician: formatAuditDoctorName(payment._doctorName),
         activity: isVoided
           ? `VOID — reversed ${formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}\nReason: ${payment.voidReason || 'Not recorded'}`
           : `Patient paid ${formatCurrency(payment.amount, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}`,

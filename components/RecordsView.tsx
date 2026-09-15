@@ -491,7 +491,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, patients = [], appoi
                           </td>
                           <td className="px-4 py-4 text-sm text-slate-500 whitespace-nowrap xl:px-6">{formatCreatedAt(payment.createdAt || payment.date)}</td>
                           <td className="px-4 py-4 font-bold text-slate-900 xl:px-6">{payment.patient_name || 'Unknown'}</td>
-                          <td className="px-4 py-4 text-sm text-slate-400 xl:px-6">-</td>
+                          <td className="px-4 py-4 text-sm text-slate-700 xl:px-6">{formatDoctorName(payment._doctorName)}</td>
                           <td className="px-4 py-4 text-sm text-slate-700 xl:px-6">
                             {isVoided ? `Payment reversed ${formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)}` : `Patient paid ${formatCurrency(payment.amount, currency)}`}{payment.receiptNumber ? ` · ${payment.receiptNumber}` : ''}
                           </td>
@@ -675,6 +675,10 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, patients = [], appoi
                         <p className={`shrink-0 text-right text-sm font-black ${isVoided ? 'text-red-700 line-through' : 'text-violet-700'}`}>{formatCurrency(isVoided ? (payment.voidedAmount ?? payment.originalAmount ?? 0) : payment.amount, currency)}</p>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
+                        <div className="col-span-2 rounded-xl bg-slate-50 p-3">
+                          <p className="text-[11px] font-semibold uppercase text-slate-500">Clinician</p>
+                          <p className="mt-1 break-words text-sm font-bold text-slate-800">{formatDoctorName(payment._doctorName)}</p>
+                        </div>
                         <div className="rounded-xl bg-violet-50 p-3">
                           <p className="text-[11px] font-semibold uppercase text-violet-600">Payment Type</p>
                           <p className="mt-1 text-sm font-bold text-violet-900">{payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)}</p>

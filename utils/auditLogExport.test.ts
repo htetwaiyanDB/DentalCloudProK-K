@@ -303,10 +303,80 @@ describe('audit log export rows', () => {
 
     expect(paymentRow?.kind).toBe('payment');
     if (paymentRow?.kind === 'payment') {
+      expect(paymentRow.payment._doctorName).toBe('Hnin');
       expect(paymentRow.payment._treatmentDiscountAmount).toBe(5000);
       expect(paymentRow.payment.doctorEarned).toBe(1000);
-      expect(buildAuditLogExportTableRows([paymentRow], 'MMK')[0].discount).toBe(5000);
-      expect(buildAuditLogExportTableRows([paymentRow], 'MMK')[0].doctorEarned).toBe(1000);
+      expect(buildAuditLogExportTableRows([paymentRow], 'MMK')[0]).toMatchObject({
+        clinician: 'Dr. Hnin',
+        discount: 5000,
+        doctorEarned: 1000
+      });
+    }
+  });
+
+  it('shows every unique doctor from the treatments linked to a payment', () => {
+    const multiDoctorRecords: ClinicalRecord[] = [
+      { ...records[0], doctor_id: 'doc-1', doctor_name: 'Dr. Hnin' },
+      { ...records[1], doctor_id: 'doc-2', doctor_name: 'Ko Ko' },
+      { ...records[1], id: 'tr-duplicate-doctor', doctor_id: 'doc-1', doctor_name: 'Hnin' }
+    ];
+    const multiDoctorPayment: PaymentRecord = {
+      ...payments[0],
+      treatmentIds: ['tr-1', 'tr-2', 'tr-duplicate-doctor'],
+      receiptSnapshot: null
+    };
+
+    const paymentRow = buildAuditLogRows(multiDoctorRecords, [], true, [multiDoctorPayment])
+      .find((row) => row.kind === 'payment');
+
+    expect(paymentRow?.kind).toBe('payment');
+    if (paymentRow?.kind === 'payment') {
+      expect(paymentRow.payment._doctorName).toBe('Hnin, Dr. Ko Ko');
+      expect(buildAuditLogExportTableRows([paymentRow], 'MMK')[0].clinician).toBe('Dr. Hnin, Dr. Ko Ko');
+    }
+  });
+
+  it('uses receipt treatment links before legacy same-day fallback for payment doctors', () => {
+    const snapshotLinkedPayment: PaymentRecord = {
+      ...payments[0],
+      treatmentIds: [],
+      receiptSnapshot: {
+        ...payments[0].receiptSnapshot!,
+        treatments: [{
+          ...payments[0].receiptSnapshot!.treatments![0],
+          id: 'tr-1'
+        }]
+      }
+    };
+    const sameDayUnrelatedRecord: ClinicalRecord = {
+      ...records[1],
+      id: 'tr-unrelated',
+      doctor_id: 'doc-2',
+      doctor_name: 'Ko Ko'
+    };
+
+    const paymentRow = buildAuditLogRows([...records, sameDayUnrelatedRecord], [], true, [snapshotLinkedPayment])
+      .find((row) => row.kind === 'payment');
+
+    expect(paymentRow?.kind).toBe('payment');
+    if (paymentRow?.kind === 'payment') {
+      expect(paymentRow.payment._doctorName).toBe('Hnin');
+    }
+  });
+
+  it('falls back to same-patient same-day treatments for unlinked legacy payments', () => {
+    const legacyPayment: PaymentRecord = {
+      ...payments[0],
+      treatmentIds: [],
+      receiptSnapshot: null
+    };
+    const paymentRow = buildAuditLogRows(records, [], true, [legacyPayment])
+      .find((row) => row.kind === 'payment');
+
+    expect(paymentRow?.kind).toBe('payment');
+    if (paymentRow?.kind === 'payment') {
+      expect(paymentRow.payment._doctorName).toBe('Hnin');
+      expect(filterAuditLogRowsForExport([paymentRow], { searchTerm: 'hnin' })).toHaveLength(1);
     }
   });
 
