@@ -44,20 +44,11 @@ export const getPaymentAvailableTreatmentAmount = (payment: PaymentRecord): numb
 };
 
 export const getPaymentTreatmentShare = (payment: PaymentRecord): number => {
-  const snapshot = payment.receiptSnapshot;
   const availableAfterNonTreatmentCharges = getPaymentAvailableTreatmentAmount(payment);
-  if (!snapshot) return availableAfterNonTreatmentCharges;
-
-  const treatmentValue = (snapshot.treatments || []).reduce(
-    (sum, item) => sum + positiveMoney(item.finalCost),
-    0
-  );
-
-  // Explicit treatment lines cap the commissionable share. Some legacy mixed
-  // receipts saved medicine lines but omitted their treatment lines; in that
-  // case the amount left after medicines and service fees is still the paid
-  // treatment balance. A medicine-only receipt naturally leaves zero here.
-  return treatmentValue > 0
-    ? roundMoney(Math.min(treatmentValue, availableAfterNonTreatmentCharges))
-    : roundMoney(availableAfterNonTreatmentCharges);
+  // Receipt snapshots from older grouped checkouts can contain only the first
+  // treatment even though the payment cleared several outstanding treatments.
+  // Medicines and service fees are explicit non-treatment charges; everything
+  // left is eligible for treatment allocation, which is separately capped by
+  // the patient's actual outstanding treatment debt.
+  return roundMoney(availableAfterNonTreatmentCharges);
 };

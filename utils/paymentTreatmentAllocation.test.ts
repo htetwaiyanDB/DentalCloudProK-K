@@ -49,14 +49,14 @@ describe('payment treatment allocation', () => {
     expect(getPaymentTreatmentShare(payment(13_000, 13_000))).toBe(0);
   });
 
-  it('exposes the amount left after non-treatment charges when a grouped receipt captured only one treatment line', () => {
-    const groupedPayment = payment(230_000, 0);
+  it('does not let an incomplete receipt treatment list cap the treatment share', () => {
+    const groupedPayment = payment(61_000, 11_000);
     groupedPayment.receiptSnapshot!.treatments = [{
       id: 'main-treatment', date: '2026-09-12', description: 'ELA', teeth: [28],
       finalCost: 30_000, standardCost: 30_000, discountAmount: 0, pricingNote: null
     }];
 
-    expect(getPaymentTreatmentShare(groupedPayment)).toBe(30_000);
-    expect(getPaymentAvailableTreatmentAmount(groupedPayment)).toBe(230_000);
+    expect(getPaymentTreatmentShare(groupedPayment)).toBe(50_000);
+    expect(getPaymentAvailableTreatmentAmount(groupedPayment)).toBe(50_000);
   });
 });
