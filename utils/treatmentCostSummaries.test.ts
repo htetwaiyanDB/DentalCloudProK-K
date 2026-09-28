@@ -19,9 +19,26 @@ describe('treatment cost summaries', () => {
       labItemCount: 1,
       specialDoctorTotal: 40_000,
       specialDoctorItemCount: 1,
+      assignedSpecialDoctorTotal: 0,
+      assignedSpecialDoctorItemCount: 0,
       totalAmount: 90_000,
       itemCount: 4
     });
+  });
+
+  it('tracks the portion of special doctor fees tied to an assigned doctor separately', () => {
+    const summaries = summarizeTreatmentCostRows([
+      { audit_log_id: 'audit-2', cost_type: 'special_doctor', total_amount: 40_000, doctor_id: 'doctor-1' },
+      { audit_log_id: 'audit-2', cost_type: 'special_doctor', total_amount: 15_000, doctor_id: null }
+    ], new Map([['audit-2', 'treatment-2']]));
+
+    expect(summaries['treatment-2']?.specialDoctorTotal).toBe(55_000);
+    expect(summaries['treatment-2']?.specialDoctorItemCount).toBe(2);
+    expect(summaries['treatment-2']?.assignedSpecialDoctorTotal).toBe(40_000);
+    expect(summaries['treatment-2']?.assignedSpecialDoctorItemCount).toBe(1);
+    // The assigned portion is a breakout, not an addition: totalAmount must
+    // not double count it.
+    expect(summaries['treatment-2']?.totalAmount).toBe(55_000);
   });
 
   it('treats legacy rows without a cost type as material', () => {

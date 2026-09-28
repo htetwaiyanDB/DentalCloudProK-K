@@ -744,6 +744,7 @@ const mapPatientMaterialCostRow = (row: any): PatientMaterialCost => {
     costAmount,
     quantity,
     totalAmount: Number(row.total_amount ?? costAmount * quantity),
+    doctorId: row.doctor_id || null,
     createdBy: row.created_by || null,
     createdByName: row.users?.username || row.created_by_name || null,
     createdAt: row.created_at,
@@ -1144,13 +1145,15 @@ const applyAutoOnpPatientTypeIfEnabled = async (locationId?: string): Promise<vo
 
   if (eligibleIds.length === 0) return;
 
-  const { error: updateError } = await supabase
-    .from('patients')
-    .update({ patient_type: AUTO_ONP_PATIENT_TYPE_NAME })
-    .in('id', eligibleIds);
+  for (const patientIdBatch of chunkUniqueIds(eligibleIds)) {
+    const { error: updateError } = await supabase
+      .from('patients')
+      .update({ patient_type: AUTO_ONP_PATIENT_TYPE_NAME })
+      .in('id', patientIdBatch);
 
-  if (updateError) {
-    console.warn('Failed to auto-convert patients to ONP:', updateError.message);
+    if (updateError) {
+      console.warn(`Failed to auto-convert ${patientIdBatch.length} patients to ONP:`, updateError.message);
+    }
   }
 };
 
@@ -3327,7 +3330,7 @@ export const api = {
         const materialBatches = await mapWithConcurrency(materialIdBatches, REPORT_REQUEST_CONCURRENCY, async (auditIdBatch) => {
           let { data, error: materialError } = await supabase
             .from('patient_material_costs')
-            .select('audit_log_id, cost_type, total_amount')
+            .select('audit_log_id, cost_type, total_amount, doctor_id')
             .in('audit_log_id', auditIdBatch);
 
           if (materialError && isMissingColumnError(materialError, 'cost_type')) {
@@ -3393,7 +3396,7 @@ export const api = {
         async (auditIdBatch) => {
           const { data, error } = await supabase
             .from('patient_material_costs')
-            .select('audit_log_id, cost_type, total_amount')
+            .select('audit_log_id, cost_type, total_amount, doctor_id')
             .in('audit_log_id', auditIdBatch);
           if (error) throw error;
           return data || [];
@@ -3440,7 +3443,8 @@ export const api = {
           material_name: trimRequired(item.materialName, item.costType === 'lab' ? 'Lab cost name' : item.costType === 'special_doctor' ? 'Special doctor name' : 'Material name', { maxLength: 255 }),
           cost_type: enumValue(item.costType, ['material', 'lab', 'special_doctor'] as const, 'Cost type'),
           cost_amount: finiteNumber(item.costAmount, item.costType === 'lab' ? 'Lab cost' : item.costType === 'special_doctor' ? 'Special doctor cost' : 'Material cost', { min: 0.01 }),
-          quantity: finiteNumber(item.quantity, item.costType === 'lab' ? 'Lab quantity' : item.costType === 'special_doctor' ? 'Special doctor quantity' : 'Material quantity', { min: 0.01 })
+          quantity: finiteNumber(item.quantity, item.costType === 'lab' ? 'Lab quantity' : item.costType === 'special_doctor' ? 'Special doctor quantity' : 'Material quantity', { min: 0.01 }),
+          doctor_id: item.costType === 'special_doctor' ? trimOptional(item.doctorId, 'Assigned doctor') : null
         }))
         .filter((item) => item.material_name);
       const groupedRecords = treatmentContext._groupedRecords?.length
@@ -3539,7 +3543,8 @@ export const api = {
           material_name: trimRequired(item.materialName, item.costType === 'lab' ? 'Lab cost name' : item.costType === 'special_doctor' ? 'Special doctor name' : 'Material name', { maxLength: 255 }),
           cost_type: enumValue(item.costType, ['material', 'lab', 'special_doctor'] as const, 'Cost type'),
           cost_amount: finiteNumber(item.costAmount, item.costType === 'lab' ? 'Lab cost' : item.costType === 'special_doctor' ? 'Special doctor cost' : 'Material cost', { min: 0.01 }),
-          quantity: finiteNumber(item.quantity, item.costType === 'lab' ? 'Lab quantity' : item.costType === 'special_doctor' ? 'Special doctor quantity' : 'Material quantity', { min: 0.01 })
+          quantity: finiteNumber(item.quantity, item.costType === 'lab' ? 'Lab quantity' : item.costType === 'special_doctor' ? 'Special doctor quantity' : 'Material quantity', { min: 0.01 }),
+          doctor_id: item.costType === 'special_doctor' ? trimOptional(item.doctorId, 'Assigned doctor') : null
         }))
         .filter((item) => item.material_name);
 

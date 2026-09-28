@@ -129,6 +129,7 @@ export interface PatientMaterialCost {
   costAmount: number;
   quantity: number;
   totalAmount: number;
+  doctorId?: string | null;
   createdBy?: string | null;
   createdByName?: string | null;
   createdAt?: string;
@@ -140,6 +141,7 @@ export interface PatientMaterialCostInput {
   costType: TreatmentCostType;
   costAmount: number;
   quantity: number;
+  doctorId?: string | null;
 }
 
 export interface MaterialLabCostPreset {
@@ -168,6 +170,11 @@ export interface TreatmentCostSummary {
   labItemCount: number;
   specialDoctorTotal: number;
   specialDoctorItemCount: number;
+  // Portion of specialDoctorTotal tied to a special doctor fee row that has
+  // an assigned doctor_id. Informational only: it is already included in
+  // specialDoctorTotal/totalAmount and must not be deducted again.
+  assignedSpecialDoctorTotal: number;
+  assignedSpecialDoctorItemCount: number;
   totalAmount: number;
   itemCount: number;
 }

@@ -16,7 +16,8 @@ const payment = (overrides: Partial<PaymentRecord> = {}): PaymentRecord => ({
 
 const costs = (overrides: Partial<TreatmentCostSummary> = {}): TreatmentCostSummary => ({
   auditLogId: 'audit-1', materialTotal: 10, materialItemCount: 1, labTotal: 5, labItemCount: 1,
-  specialDoctorTotal: 0, specialDoctorItemCount: 0, totalAmount: 15, itemCount: 2, ...overrides
+  specialDoctorTotal: 0, specialDoctorItemCount: 0, assignedSpecialDoctorTotal: 0, assignedSpecialDoctorItemCount: 0,
+  totalAmount: 15, itemCount: 2, ...overrides
 });
 
 describe('monthly report', () => {

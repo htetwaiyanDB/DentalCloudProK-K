@@ -60,9 +60,9 @@ describe('api.materialCosts transactional RPC', () => {
       payload: {
         p_audit_log_id: 'audit-1',
         p_items: [
-          { material_name: 'Composite', cost_type: 'material', cost_amount: 100, quantity: 2 },
-          { material_name: 'Crown lab', cost_type: 'lab', cost_amount: 300, quantity: 1 },
-          { material_name: 'Implant doctor', cost_type: 'special_doctor', cost_amount: 100000, quantity: 1 }
+          { material_name: 'Composite', cost_type: 'material', cost_amount: 100, quantity: 2, doctor_id: null },
+          { material_name: 'Crown lab', cost_type: 'lab', cost_amount: 300, quantity: 1, doctor_id: null },
+          { material_name: 'Implant doctor', cost_type: 'special_doctor', cost_amount: 100000, quantity: 1, doctor_id: null }
         ],
         p_admin_user_id: 'admin-1',
         p_admin_password: 'session-token-1',
@@ -74,6 +74,18 @@ describe('api.materialCosts transactional RPC', () => {
       'Treatment costs were saved, but doctor commission refresh needs retry.',
       expect.any(Error)
     );
+  });
+
+  it('passes doctor_id through for a special doctor item on a treatment', async () => {
+    await api.materialCosts.upsertForTreatment({
+      id: 'treatment-1', location_id: 'location-1', patient_id: 'patient-1', teeth: [], description: 'Crown', cost: 1000, date: '2026-07-18'
+    }, [
+      { materialName: 'Implant doctor', costType: 'special_doctor', costAmount: 100000, quantity: 1, doctorId: 'doctor-1' }
+    ], { userId: 'admin-1', username: 'Admin', authToken: 'session-token-1' });
+
+    expect(supabaseMock.rpcCalls[0].payload.p_items).toEqual([
+      { material_name: 'Implant doctor', cost_type: 'special_doctor', cost_amount: 100000, quantity: 1, doctor_id: 'doctor-1' }
+    ]);
   });
 
   it('stores each MLS edit against the selected payment audit row', async () => {

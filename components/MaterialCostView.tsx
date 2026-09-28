@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeftRight, Beaker, Loader2, Package, Plus, RotateCw, Search, Stethoscope } from 'lucide-react';
-import type { ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
+import { ArrowLeftRight, Beaker, Loader2, Package, Plus, RotateCw, Search, Stethoscope, UserCheck } from 'lucide-react';
+import type { ClinicalRecord, Doctor, PaymentRecord, TreatmentCostSummary } from '../types';
 import { api } from '../services/api';
 import { formatCurrency, type Currency } from '../utils/currency';
 import { toLocalISODate } from '../utils/auditLogFilters';
@@ -20,6 +20,7 @@ interface MaterialCostViewProps {
   // Optional fast path after a cost save: refresh only the affected patient's
   // rows instead of reloading every clinic record, payment, and dashboard metric.
   onCostsSaved?: (patientId?: string | null) => Promise<void> | void;
+  doctors: Doctor[];
 }
 
 type MaterialCostFilter = 'all' | 'tomorrow' | 'today' | 'custom';
@@ -36,7 +37,7 @@ const getTreatmentRecordIds = (record: ClinicalRecord & { _groupedRecords?: Clin
   return groupedRecords.map((item) => item.id).filter(Boolean);
 };
 
-const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh, onCostsSaved }) => {
+const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh, onCostsSaved, doctors }) => {
   const summaryRequestVersion = React.useRef(0);
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -156,6 +157,12 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     return Number(materialSummaries[paymentId]?.[key] || 0);
   };
 
+  // Portion of the special doctor fee tied to an assigned doctor. This is a
+  // breakout of specialDoctorTotal for reporting only: it is already
+  // deducted as part of getMaterialTotal/getNetProfit and must not be
+  // subtracted again.
+  const getAssignedSpecialDoctorTotal = (paymentId: string) => Number(materialSummaries[paymentId]?.assignedSpecialDoctorTotal || 0);
+
   const getTreatmentAmount = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
     const groupedRecords = record._groupedRecords?.length ? record._groupedRecords : [record];
     return groupedRecords.reduce((sum, item) => sum + Number(item.cost || 0), 0);
@@ -226,6 +233,17 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     );
   };
 
+  const renderAssignedSpecialDoctorFee = (paymentId: string) => {
+    const amount = getAssignedSpecialDoctorTotal(paymentId);
+    if (amount <= 0) return <span className="text-slate-400">-</span>;
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-100 bg-amber-50/60 px-2.5 py-1 text-xs font-bold text-amber-600" title="Portion of the special doctor cost tied to an assigned doctor. Already included in Special Doctor Cost.">
+        <UserCheck size={13} />
+        {formatCurrency(amount, currency)}
+      </span>
+    );
+  };
+
   const handleMaterialSaved = async (summary: TreatmentCostSummary & { paymentId: string; patientId?: string | null }) => {
     setMaterialSummaries((current) => {
       const next = { ...current };
@@ -239,7 +257,9 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
           labTotal: summary.labTotal,
           labItemCount: summary.labItemCount,
           specialDoctorTotal: summary.specialDoctorTotal,
-          specialDoctorItemCount: summary.specialDoctorItemCount
+          specialDoctorItemCount: summary.specialDoctorItemCount,
+          assignedSpecialDoctorTotal: summary.assignedSpecialDoctorTotal,
+          assignedSpecialDoctorItemCount: summary.assignedSpecialDoctorItemCount
         };
       } else {
         delete next[summary.paymentId];
@@ -484,6 +504,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Material Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Lab Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Special Doctor Cost</th>
+                <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Assigned Doctor Fee</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Total Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Net Receive</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Doctor Earned</th>
@@ -494,7 +515,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
             <tbody className="divide-y divide-slate-100 bg-white">
               {statusFilteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={15} className="px-6 py-12 text-center">
+                  <td colSpan={16} className="px-6 py-12 text-center">
                     <div className="mx-auto max-w-sm rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6">
                       <p className="text-sm font-semibold text-slate-600">No treatment rows found</p>
                       <p className="mt-1 text-xs text-slate-400">Try another date range or clear the search field.</p>
@@ -526,6 +547,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(row.paymentId, 'material')}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(row.paymentId, 'lab')}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(row.paymentId, 'special_doctor')}</td>
+                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderAssignedSpecialDoctorFee(row.paymentId)}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-slate-800 xl:px-6">{getMaterialTotal(row.paymentId) > 0 ? formatCurrency(getMaterialTotal(row.paymentId), currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-teal-700 xl:px-6">{collectedAmount > 0 ? formatCurrency(netReceive, currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold text-emerald-700 xl:px-6">{adjustedDoctorEarned > 0 ? formatCurrency(adjustedDoctorEarned, currency) : '-'}</td>
@@ -615,6 +637,12 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Special doctor cost</dt>
                         <dd className="mt-1 text-sm font-bold">{renderTypedCost(row.paymentId, 'special_doctor')}</dd>
                       </div>
+                      {getAssignedSpecialDoctorTotal(row.paymentId) > 0 && (
+                        <div className="min-w-0 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
+                          <dt className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Assigned doctor fee</dt>
+                          <dd className="mt-1 text-sm font-bold">{renderAssignedSpecialDoctorFee(row.paymentId)}</dd>
+                        </div>
+                      )}
                       <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-100 p-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-600">Total cost</dt>
                         <dd className="mt-1 break-words text-sm font-black text-slate-800">{totalCost > 0 ? formatCurrency(totalCost, currency) : '-'}</dd>
@@ -668,6 +696,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
         isOpen={!!editingRow}
         payment={editingRow?.payment || null}
         record={editingRow?.record || null}
+        doctors={doctors}
         currency={currency}
         onClose={() => setEditingRow(null)}
         onSaved={handleMaterialSaved}
