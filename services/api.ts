@@ -156,7 +156,7 @@ const sameLedgerMoney = (left: unknown, right: unknown): boolean => {
   return Math.abs(Number(left || 0) - Number(right || 0)) < 0.005;
 };
 
-const recalculatePatientDoctorCommissions = async (patientId: string): Promise<void> => {
+export const recalculatePatientDoctorCommissions = async (patientId: string): Promise<void> => {
   let { data: treatmentRows, error: treatmentError }: { data: any[] | null; error: any } = await supabase
     .from('treatments')
     .select('id, location_id, patient_id, doctor_id, treatment_type_id, date, cost, doctor_earnings, commission_type_snapshot, commission_percentage_snapshot, commission_per_visit_snapshot, commission_source_snapshot, commission_snapshot_at, doctors(specialization, commission_type, commission_percentage, commission_per_visit)')
@@ -191,15 +191,14 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
   if (treatmentError) throw new Error(treatmentError.message);
   if (!treatmentRows?.length) return;
 
-  const treatmentIds = treatmentRows.map((row: any) => row.id).filter(Boolean);
-  const doctorIds = Array.from(new Set(treatmentRows.map((row: any) => row.doctor_id).filter(Boolean)));
-  const [{ data: paymentRows, error: paymentError }, materialByTreatment] = await Promise.all([
-    supabase
-      .from('payments')
-      .select('id, patient_id, payment_date, created_at, amount, cleared_amount, treatment_ids, receipt_snapshot')
-      .eq('patient_id', patientId),
-    api.materialCosts.getTotalsByTreatmentIds(treatmentIds, { idBatchSize: 50 })
-  ]);
+  const doctorIds = Array.from(new Set(treatmentRows
+    .filter((row: any) => !row.commission_type_snapshot && row.treatment_type_id)
+    .map((row: any) => row.doctor_id)
+    .filter(Boolean)));
+  const { data: paymentRows, error: paymentError } = await supabase
+    .from('payments')
+    .select('id, patient_id, payment_date, created_at, amount, cleared_amount, treatment_ids, receipt_snapshot')
+    .eq('patient_id', patientId);
   if (paymentError && !isMissingRelationError(paymentError, 'payments')) throw new Error(paymentError.message);
   const materialByPayment = await api.materialCosts.getTotalsByPaymentIds(
     (paymentRows || []).map((row: any) => row.id).filter(Boolean),
@@ -273,8 +272,10 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     treatmentTypeId: row.treatment_type_id,
     date: row.date,
     cost: Math.max(0, Number(row.cost || 0)),
-    materialCost: (materialByTreatment[row.id]?.totalAmount || 0) + (paymentCostByTreatment.get(row.id)?.totalAmount || 0),
-    specialDoctorCost: (materialByTreatment[row.id]?.specialDoctorTotal || 0) + (paymentCostByTreatment.get(row.id)?.specialDoctorTotal || 0),
+    // MLS is payment-based. Legacy costs attached directly to treatments are
+    // intentionally excluded because they are not visible/editable on the MLS page.
+    materialCost: paymentCostByTreatment.get(row.id)?.totalAmount || 0,
+    specialDoctorCost: paymentCostByTreatment.get(row.id)?.specialDoctorTotal || 0,
     commissionType: resolveDoctorCommissionType({
       commissionType: row.commission_type_snapshot ?? row.doctors?.commission_type,
       specialization: row.doctors?.specialization
@@ -408,13 +409,13 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     const storedEarnings = Number(treatment.doctor_earnings);
     return !Number.isFinite(storedEarnings) || Math.abs(storedEarnings - targetEarnings) >= 0.005;
   });
-  await Promise.all(earningsChangedTreatments.map(async (treatment: any) => {
+  await mapWithConcurrency(earningsChangedTreatments, 3, async (treatment: any) => {
     const { error } = await supabase
       .from('treatments')
       .update({ doctor_earnings: earningsByTreatment[treatment.id] || 0 })
       .eq('id', treatment.id);
     if (error) throw new Error(error.message);
-  }));
+  });
 
 };
 

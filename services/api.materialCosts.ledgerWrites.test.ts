@@ -88,6 +88,7 @@ vi.mock('../utils/doctorCommissionLedger', async (importOriginal) => {
 });
 
 import { api } from './api';
+import { calculateCommissionLedgerEntries } from '../utils/doctorCommissionLedger';
 
 const baseTreatment = (overrides: any) => ({
   id: 't-1',
@@ -146,7 +147,18 @@ describe('MLS save commission ledger write-path', () => {
     supabaseMock.state.auditRows = [{ id: 'a-1', source_id: 't-1' }, { id: 'a-2', source_id: 't-2' }];
     supabaseMock.state.costRows = [{ audit_log_id: 'a-1', cost_type: 'material', total_amount: 100 }];
     supabaseMock.state.existingEntryRows = [];
+    vi.mocked(calculateCommissionLedgerEntries).mockClear();
     vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('ignores legacy treatment-based MLS costs during commission recalculation', async () => {
+    await saveCosts();
+
+    const treatments = vi.mocked(calculateCommissionLedgerEntries).mock.calls.at(-1)?.[0] || [];
+    expect(treatments.find((treatment: any) => treatment.id === 't-1')?.materialCost).toBe(0);
+    expect(callsFor('audit_logs', 'eq')).not.toContainEqual(
+      expect.objectContaining({ args: ['source_type', 'treatment'] })
+    );
   });
 
   it('skips ledger upserts and treatment updates when stored values already match', async () => {
