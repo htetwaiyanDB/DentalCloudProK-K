@@ -1576,22 +1576,43 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
+  v_source_type TEXT;
+  v_source_id UUID;
   v_material_total NUMERIC(12,2);
   v_lab_total NUMERIC(12,2);
   v_admin_username TEXT;
   v_location_id UUID;
-  v_treatment_date DATE;
+  v_activity_date DATE;
   v_patient_id UUID;
   v_patient_name TEXT;
-  v_treatment_label TEXT;
+  v_activity_label TEXT;
   v_material_names TEXT;
   v_lab_names TEXT;
 BEGIN
-  SELECT t.location_id, t.date, t.patient_id, COALESCE(p.name, 'Unknown patient'), COALESCE(t.description, 'Treatment')
-  INTO v_location_id, v_treatment_date, v_patient_id, v_patient_name, v_treatment_label
-  FROM audit_logs a JOIN treatments t ON t.id = a.source_id LEFT JOIN patients p ON p.id = t.patient_id
-  WHERE a.id = p_audit_log_id AND a.source_type = 'treatment' FOR UPDATE OF a, t;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Treatment audit row was not found.'; END IF;
+  SELECT a.source_type, a.source_id INTO v_source_type, v_source_id
+  FROM audit_logs a WHERE a.id = p_audit_log_id FOR UPDATE;
+  IF NOT FOUND OR v_source_type NOT IN ('treatment', 'payment') THEN
+    RAISE EXCEPTION 'Treatment or payment audit row was not found.';
+  END IF;
+  IF v_source_type = 'payment' THEN
+    SELECT pay.location_id, COALESCE(pay.payment_date, pay.created_at::DATE), pay.patient_id,
+      COALESCE(patient.name, 'Unknown patient'),
+      COALESCE(NULLIF((
+        SELECT string_agg(DISTINCT COALESCE(t.description, 'Treatment'), ' + ')
+        FROM treatments t WHERE t.id = ANY(COALESCE(pay.treatment_ids, ARRAY[]::UUID[]))
+      ), ''), 'Payment')
+    INTO v_location_id, v_activity_date, v_patient_id, v_patient_name, v_activity_label
+    FROM payments pay LEFT JOIN patients patient ON patient.id = pay.patient_id
+    WHERE pay.id = v_source_id FOR UPDATE OF pay;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Payment record was not found.'; END IF;
+  ELSE
+    SELECT treatment.location_id, treatment.date, treatment.patient_id,
+      COALESCE(patient.name, 'Unknown patient'), COALESCE(treatment.description, 'Treatment')
+    INTO v_location_id, v_activity_date, v_patient_id, v_patient_name, v_activity_label
+    FROM treatments treatment LEFT JOIN patients patient ON patient.id = treatment.patient_id
+    WHERE treatment.id = v_source_id FOR UPDATE OF treatment;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Treatment record was not found.'; END IF;
+  END IF;
   SELECT u.username INTO v_admin_username FROM users u
   WHERE u.id = p_admin_user_id
     AND (
@@ -1636,11 +1657,11 @@ BEGIN
   DELETE FROM expenses WHERE source_id = p_audit_log_id AND source_type IN ('material_cost', 'lab_cost', 'special_doctor_cost');
   IF v_material_total > 0 THEN
     INSERT INTO expenses (location_id, description, amount, category, date, source_type, source_id, is_system_generated)
-    VALUES (v_location_id, 'Material cost - ' || v_patient_name || ' - ' || v_treatment_label || CASE WHEN v_material_names <> '' THEN ' (' || v_material_names || ')' ELSE '' END, v_material_total, 'Material Cost', v_treatment_date, 'material_cost', p_audit_log_id, true);
+    VALUES (v_location_id, 'Material cost - ' || v_patient_name || ' - ' || v_activity_label || CASE WHEN v_material_names <> '' THEN ' (' || v_material_names || ')' ELSE '' END, v_material_total, 'Material Cost', v_activity_date, 'material_cost', p_audit_log_id, true);
   END IF;
   IF v_lab_total > 0 THEN
     INSERT INTO expenses (location_id, description, amount, category, date, source_type, source_id, is_system_generated)
-    VALUES (v_location_id, 'Lab cost - ' || v_patient_name || ' - ' || v_treatment_label || CASE WHEN v_lab_names <> '' THEN ' (' || v_lab_names || ')' ELSE '' END, v_lab_total, 'Lab Cost', v_treatment_date, 'lab_cost', p_audit_log_id, true);
+    VALUES (v_location_id, 'Lab cost - ' || v_patient_name || ' - ' || v_activity_label || CASE WHEN v_lab_names <> '' THEN ' (' || v_lab_names || ')' ELSE '' END, v_lab_total, 'Lab Cost', v_activity_date, 'lab_cost', p_audit_log_id, true);
   END IF;
   INSERT INTO pending_commission_recalculations (patient_id, request_token, requested_at) VALUES (v_patient_id, p_request_token, NOW())
   ON CONFLICT (patient_id) DO UPDATE SET request_token = EXCLUDED.request_token, requested_at = EXCLUDED.requested_at;

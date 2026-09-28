@@ -75,4 +75,27 @@ describe('api.materialCosts transactional RPC', () => {
       expect.any(Error)
     );
   });
+
+  it('stores each MLS edit against the selected payment audit row', async () => {
+    await api.materialCosts.upsertForPayment({
+      id: 'payment-1', location_id: 'location-1', patientId: 'patient-1', amount: 500,
+      date: '2026-09-28', type: 'PARTIAL', remainingBalance: 500, paymentMethod: 'CASH'
+    }, {
+      id: 'treatment-1', location_id: 'location-1', patient_id: 'patient-1', doctor_id: 'doctor-1',
+      teeth: [], description: 'Crown', cost: 1000, date: '2026-09-28'
+    }, [
+      { materialName: 'Composite', costType: 'material', costAmount: 100, quantity: 1 }
+    ], { userId: 'admin-1', username: 'Admin', authToken: 'session-token-1' });
+
+    expect(supabaseMock.from).toHaveBeenCalledWith('audit_logs');
+    const auditUpsert = supabaseMock.from.mock.results
+      .map((result: any) => result.value?.upsert)
+      .find(Boolean);
+    expect(auditUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      source_type: 'payment',
+      source_id: 'payment-1',
+      payment_id: 'payment-1',
+      patient_id: 'patient-1'
+    }), { onConflict: 'source_type,source_id' });
+  });
 });

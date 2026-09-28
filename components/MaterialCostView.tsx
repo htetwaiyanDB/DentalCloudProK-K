@@ -25,6 +25,7 @@ interface MaterialCostViewProps {
 type MaterialCostFilter = 'all' | 'tomorrow' | 'today' | 'custom';
 type MaterialCostRow = {
   paymentId: string;
+  payment: PaymentRecord;
   collectedAmount: number;
   doctorEarned: number;
   record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] };
@@ -46,7 +47,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   const [materialFilter, setMaterialFilter] = useState<MaterialCostFilter>('today');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isTableScrollable, setIsTableScrollable] = useState(false);
-  const [editingRecord, setEditingRecord] = useState<(ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) | null>(null);
+  const [editingRow, setEditingRow] = useState<MaterialCostRow | null>(null);
   const [materialSummaries, setMaterialSummaries] = useState<Record<string, TreatmentCostSummary>>({});
   const todayKey = useMemo(() => toLocalISODate(new Date()), []);
   const tomorrowKey = useMemo(() => {
@@ -94,6 +95,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
 
       return [{
         paymentId: paymentRow.id,
+        payment: paymentRow.payment,
         collectedAmount: paymentRow.totalPaid,
         doctorEarned: paymentRow.doctorEarned,
         record
@@ -103,18 +105,18 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
 
   const loadMaterialSummaries = React.useCallback(async (rowsToLoad: MaterialCostRow[]) => {
     const requestVersion = ++summaryRequestVersion.current;
-    const treatmentIds = rowsToLoad.flatMap((row) => getTreatmentRecordIds(row.record));
-    if (treatmentIds.length === 0) {
+    const paymentIds = rowsToLoad.map((row) => row.paymentId).filter(Boolean);
+    if (paymentIds.length === 0) {
       return;
     }
 
     try {
-      const summaries = await api.materialCosts.getTotalsByTreatmentIds(treatmentIds);
+      const summaries = await api.materialCosts.getTotalsByPaymentIds(paymentIds);
       if (requestVersion !== summaryRequestVersion.current) return;
       setMaterialSummaries((current) => {
         const next = { ...current };
-        treatmentIds.forEach((treatmentId) => {
-          delete next[treatmentId];
+        paymentIds.forEach((paymentId) => {
+          delete next[paymentId];
         });
         return { ...next, ...summaries };
       });
@@ -147,15 +149,11 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     );
   };
 
-  const getMaterialTotal = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
-    return getTreatmentRecordIds(record).reduce((sum, treatmentId) => {
-      return sum + Number(materialSummaries[treatmentId]?.totalAmount || 0);
-    }, 0);
-  };
+  const getMaterialTotal = (paymentId: string) => Number(materialSummaries[paymentId]?.totalAmount || 0);
 
-  const getTypedCostTotal = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab' | 'special_doctor') => {
+  const getTypedCostTotal = (paymentId: string, costType: 'material' | 'lab' | 'special_doctor') => {
     const key = costType === 'lab' ? 'labTotal' : costType === 'special_doctor' ? 'specialDoctorTotal' : 'materialTotal';
-    return getTreatmentRecordIds(record).reduce((sum, treatmentId) => sum + Number(materialSummaries[treatmentId]?.[key] || 0), 0);
+    return Number(materialSummaries[paymentId]?.[key] || 0);
   };
 
   const getTreatmentAmount = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
@@ -163,12 +161,12 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     return groupedRecords.reduce((sum, item) => sum + Number(item.cost || 0), 0);
   };
 
-  const getNetReceive = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, collectedAmount: number) => {
-    return Math.max(0, collectedAmount - getMaterialTotal(record));
+  const getNetReceive = (paymentId: string, collectedAmount: number) => {
+    return Math.max(0, collectedAmount - getMaterialTotal(paymentId));
   };
 
-  const getNetProfit = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, collectedAmount: number, doctorEarned: number) => {
-    return collectedAmount - getMaterialTotal(record) - doctorEarned;
+  const getNetProfit = (paymentId: string, collectedAmount: number, doctorEarned: number) => {
+    return collectedAmount - getMaterialTotal(paymentId) - doctorEarned;
   };
 
   const paginatedRows = useMemo(() => {
@@ -215,8 +213,8 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     };
   }, [loading]);
 
-  const renderTypedCost = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }, costType: 'material' | 'lab' | 'special_doctor') => {
-    const totalAmount = getTypedCostTotal(record, costType);
+  const renderTypedCost = (paymentId: string, costType: 'material' | 'lab' | 'special_doctor') => {
+    const totalAmount = getTypedCostTotal(paymentId, costType);
     if (totalAmount <= 0) return <span className="text-slate-400">-</span>;
     const isLab = costType === 'lab';
     const isSpecialDoctor = costType === 'special_doctor';
@@ -228,11 +226,11 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     );
   };
 
-  const handleMaterialSaved = async (summary: TreatmentCostSummary & { treatmentId: string; patientId?: string | null }) => {
+  const handleMaterialSaved = async (summary: TreatmentCostSummary & { paymentId: string; patientId?: string | null }) => {
     setMaterialSummaries((current) => {
       const next = { ...current };
       if (summary.itemCount > 0 && summary.totalAmount > 0) {
-        next[summary.treatmentId] = {
+        next[summary.paymentId] = {
           auditLogId: summary.auditLogId,
           totalAmount: summary.totalAmount,
           itemCount: summary.itemCount,
@@ -244,7 +242,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
           specialDoctorItemCount: summary.specialDoctorItemCount
         };
       } else {
-        delete next[summary.treatmentId];
+        delete next[summary.paymentId];
       }
       return next;
     });
@@ -508,9 +506,9 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                   const record = row.record;
                   const treatmentAmount = getTreatmentAmount(record);
                   const collectedAmount = row.collectedAmount;
-                  const netReceive = getNetReceive(record, collectedAmount);
+                  const netReceive = getNetReceive(row.paymentId, collectedAmount);
                   const adjustedDoctorEarned = row.doctorEarned;
-                  const netProfit = getNetProfit(record, collectedAmount, adjustedDoctorEarned);
+                  const netProfit = getNetProfit(row.paymentId, collectedAmount, adjustedDoctorEarned);
                   return (
                     <tr key={`material-cost-${row.paymentId}`} className="group border-l-4 border-[var(--hover-300)] transition-colors hover:bg-[var(--hover-50)]/30">
                       <td className="whitespace-nowrap px-4 py-4 text-sm text-slate-500 xl:px-6">{record.date}</td>
@@ -525,10 +523,10 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       <td className="px-4 py-4 text-right text-sm xl:px-6">{renderPatientBalance(record.patient_balance)}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-slate-900 xl:px-6">{formatCurrency(treatmentAmount, currency)}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-blue-700 xl:px-6">{collectedAmount > 0 ? formatCurrency(collectedAmount, currency) : '-'}</td>
-                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'material')}</td>
-                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'lab')}</td>
-                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(record, 'special_doctor')}</td>
-                      <td className="px-4 py-4 text-right text-sm font-black text-slate-800 xl:px-6">{getMaterialTotal(record) > 0 ? formatCurrency(getMaterialTotal(record), currency) : '-'}</td>
+                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(row.paymentId, 'material')}</td>
+                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(row.paymentId, 'lab')}</td>
+                      <td className="px-4 py-4 text-right text-sm font-bold xl:px-6">{renderTypedCost(row.paymentId, 'special_doctor')}</td>
+                      <td className="px-4 py-4 text-right text-sm font-black text-slate-800 xl:px-6">{getMaterialTotal(row.paymentId) > 0 ? formatCurrency(getMaterialTotal(row.paymentId), currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-black text-teal-700 xl:px-6">{collectedAmount > 0 ? formatCurrency(netReceive, currency) : '-'}</td>
                       <td className="px-4 py-4 text-right text-sm font-bold text-emerald-700 xl:px-6">{adjustedDoctorEarned > 0 ? formatCurrency(adjustedDoctorEarned, currency) : '-'}</td>
                       <td className={`px-4 py-4 text-right text-sm font-black xl:px-6 ${netProfit >= 0 ? 'text-slate-900' : 'text-red-600'}`}>{formatCurrency(netProfit, currency)}</td>
@@ -536,7 +534,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                         {canManageMaterials ? (
                           <button
                             type="button"
-                            onClick={() => setEditingRecord(record)}
+                            onClick={() => setEditingRow(row)}
                             className="inline-flex items-center gap-1 rounded-lg border border-[var(--hover-200)] bg-[var(--hover-50)] px-3 py-1.5 text-xs font-bold text-[var(--hover-700)] hover:bg-[var(--hover-100)]"
                           >
                             <Package size={13} />
@@ -567,9 +565,9 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
               const treatmentAmount = getTreatmentAmount(record);
               const collectedAmount = row.collectedAmount;
               const adjustedDoctorEarned = row.doctorEarned;
-              const netProfit = getNetProfit(record, collectedAmount, adjustedDoctorEarned);
-              const totalCost = getMaterialTotal(record);
-              const netReceive = getNetReceive(record, collectedAmount);
+              const netProfit = getNetProfit(row.paymentId, collectedAmount, adjustedDoctorEarned);
+              const totalCost = getMaterialTotal(row.paymentId);
+              const netReceive = getNetReceive(row.paymentId, collectedAmount);
               return (
                 <article key={`material-cost-card-${row.paymentId}`} className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="border-l-4 border-[var(--hover-300)] p-3 sm:p-4">
@@ -607,15 +605,15 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       </div>
                       <div className="min-w-0 rounded-xl border border-cyan-100 bg-cyan-50 p-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-cyan-700">Material cost</dt>
-                        <dd className="mt-1 text-sm font-bold">{renderTypedCost(record, 'material')}</dd>
+                        <dd className="mt-1 text-sm font-bold">{renderTypedCost(row.paymentId, 'material')}</dd>
                       </div>
                       <div className="min-w-0 rounded-xl border border-violet-100 bg-violet-50 p-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-violet-700">Lab cost</dt>
-                        <dd className="mt-1 text-sm font-bold">{renderTypedCost(record, 'lab')}</dd>
+                        <dd className="mt-1 text-sm font-bold">{renderTypedCost(row.paymentId, 'lab')}</dd>
                       </div>
                       <div className="min-w-0 rounded-xl border border-amber-100 bg-amber-50 p-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Special doctor cost</dt>
-                        <dd className="mt-1 text-sm font-bold">{renderTypedCost(record, 'special_doctor')}</dd>
+                        <dd className="mt-1 text-sm font-bold">{renderTypedCost(row.paymentId, 'special_doctor')}</dd>
                       </div>
                       <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-100 p-3">
                         <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-600">Total cost</dt>
@@ -635,7 +633,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                       {canManageMaterials ? (
                         <button
                           type="button"
-                          onClick={() => setEditingRecord(record)}
+                          onClick={() => setEditingRow(row)}
                           className="flex min-h-10 w-full items-center justify-center gap-1 rounded-xl border border-[var(--hover-200)] bg-[var(--hover-50)] px-3 py-2 text-sm font-bold text-[var(--hover-700)] transition-colors hover:bg-[var(--hover-100)] focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)]"
                         >
                           <Package size={15} />
@@ -667,10 +665,11 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
       )}
 
       <MaterialCostModal
-        isOpen={!!editingRecord}
-        record={editingRecord}
+        isOpen={!!editingRow}
+        payment={editingRow?.payment || null}
+        record={editingRow?.record || null}
         currency={currency}
-        onClose={() => setEditingRecord(null)}
+        onClose={() => setEditingRow(null)}
         onSaved={handleMaterialSaved}
       />
     </div>

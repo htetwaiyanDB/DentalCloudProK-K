@@ -1,6 +1,6 @@
 import React from 'react';
 import { Beaker, Loader2, Package, Plus, Settings2, Stethoscope, Trash2 } from 'lucide-react';
-import type { ClinicalRecord, MaterialLabCostPreset, MaterialLabCostPresetInput, PatientMaterialCostInput, TreatmentCostSummary, TreatmentCostType } from '../types';
+import type { ClinicalRecord, MaterialLabCostPreset, MaterialLabCostPresetInput, PatientMaterialCostInput, PaymentRecord, TreatmentCostSummary, TreatmentCostType } from '../types';
 import { api } from '../services/api';
 import { auth } from '../services/auth';
 import { formatCurrency, type Currency } from '../utils/currency';
@@ -12,10 +12,11 @@ import MaterialCostPresetManager from './MaterialCostPresetManager';
 
 interface MaterialCostModalProps {
   isOpen: boolean;
+  payment: PaymentRecord | null;
   record: (ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) | null;
   currency: Currency;
   onClose: () => void;
-  onSaved: (summary: TreatmentCostSummary & { treatmentId: string; patientId?: string | null }) => void | Promise<void>;
+  onSaved: (summary: TreatmentCostSummary & { paymentId: string; patientId?: string | null }) => void | Promise<void>;
 }
 
 type CostDraft = PatientMaterialCostInput & MaterialCostDraftRow;
@@ -28,7 +29,7 @@ const getRecordActivity = (record: MaterialCostModalProps['record']) => {
   return rows.map((item) => item.description).filter(Boolean).join(' + ') || 'Treatment record';
 };
 
-const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, record, currency, onClose, onSaved }) => {
+const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, record, currency, onClose, onSaved }) => {
   const [items, setItems] = React.useState<CostDraft[]>([createEmptyDraft('material'), createEmptyDraft('lab'), createEmptyDraft('special_doctor')]);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -44,10 +45,10 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, record, c
   const presetRequestVersion = React.useRef(0);
 
   React.useEffect(() => {
-    if (!isOpen || !record) return;
+    if (!isOpen || !payment || !record) return;
     let cancelled = false;
     setLoading(true); setSaving(false); setError(null); setLoadFailed(false);
-    api.materialCosts.getByTreatmentId(record.id).then(({ items: saved }) => {
+    api.materialCosts.getByPaymentId(payment.id).then(({ items: saved }) => {
       if (cancelled) return;
       const drafts: CostDraft[] = saved.map((item) => ({ localId: item.id, materialName: item.materialName, costType: item.costType, costAmount: item.costAmount, quantity: item.quantity, isPristine: false }));
       if (!drafts.some((item) => item.costType === 'material')) drafts.push(createEmptyDraft('material'));
@@ -58,7 +59,7 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, record, c
       if (!cancelled) { setError(err?.message || 'Failed to load treatment costs.'); setLoadFailed(true); setItems([createEmptyDraft('material'), createEmptyDraft('lab'), createEmptyDraft('special_doctor')]); }
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [isOpen, record]);
+  }, [isOpen, payment, record]);
 
   const loadPresets = React.useCallback(async () => {
     const requestVersion = ++presetRequestVersion.current;
@@ -88,14 +89,14 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, record, c
   }, []);
 
   React.useEffect(() => {
-    if (!isOpen || !record) return;
+    if (!isOpen || !payment || !record) return;
     setShowPresetManager(false);
     setPresetManagerError(null);
     void loadPresets();
     return () => { presetRequestVersion.current += 1; };
-  }, [isOpen, record, loadPresets]);
+  }, [isOpen, payment, record, loadPresets]);
 
-  if (!isOpen || !record) return null;
+  if (!isOpen || !payment || !record) return null;
   const updateItem = (id: string, patch: Partial<CostDraft>) => setItems((current) => current.map((item) => item.localId === id ? { ...item, ...patch, isPristine: false } : item));
   const removeItem = (id: string, type: TreatmentCostType) => setItems((current) => {
     const remaining = current.filter((item) => item.localId !== id);
@@ -153,14 +154,14 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, record, c
       if (!session.staffAuthToken) throw new Error('Your staff session needs a one-time refresh. Sign out and sign back in, then save again.');
       const incomplete = visibleItems.find((item) => !item.materialName.trim() || Number(item.costAmount) <= 0 || Number(item.quantity) <= 0);
       if (incomplete) throw new Error(`Each ${incomplete.costType === 'lab' ? 'lab cost' : incomplete.costType === 'special_doctor' ? 'special doctor cost' : 'material'} needs a name, a cost greater than zero, and a quantity greater than zero.`);
-      const result = await api.materialCosts.upsertForTreatment(record, visibleItems.map((item) => ({ materialName: item.materialName.trim(), costType: item.costType, costAmount: Number(item.costAmount), quantity: Number(item.quantity) })), { userId: session.userId, username: session.username, authToken: session.staffAuthToken });
+      const result = await api.materialCosts.upsertForPayment(payment, record, visibleItems.map((item) => ({ materialName: item.materialName.trim(), costType: item.costType, costAmount: Number(item.costAmount), quantity: Number(item.quantity) })), { userId: session.userId, username: session.username, authToken: session.staffAuthToken });
       const materialRows = result.items.filter((item) => item.costType === 'material');
       const labRows = result.items.filter((item) => item.costType === 'lab');
       const specialDoctorRows = result.items.filter((item) => item.costType === 'special_doctor');
       const savedMaterialTotal = materialRows.reduce((sum, item) => sum + item.totalAmount, 0);
       const savedLabTotal = labRows.reduce((sum, item) => sum + item.totalAmount, 0);
       const savedSpecialDoctorTotal = specialDoctorRows.reduce((sum, item) => sum + item.totalAmount, 0);
-      const summary = { treatmentId: record.id, patientId: record.patient_id || record._groupedRecords?.[0]?.patient_id || null, auditLogId: result.auditLogId, materialTotal: savedMaterialTotal, materialItemCount: materialRows.length, labTotal: savedLabTotal, labItemCount: labRows.length, specialDoctorTotal: savedSpecialDoctorTotal, specialDoctorItemCount: specialDoctorRows.length, totalAmount: savedMaterialTotal + savedLabTotal + savedSpecialDoctorTotal, itemCount: result.items.length };
+      const summary = { paymentId: payment.id, patientId: payment.patientId || record.patient_id || record._groupedRecords?.[0]?.patient_id || null, auditLogId: result.auditLogId, materialTotal: savedMaterialTotal, materialItemCount: materialRows.length, labTotal: savedLabTotal, labItemCount: labRows.length, specialDoctorTotal: savedSpecialDoctorTotal, specialDoctorItemCount: specialDoctorRows.length, totalAmount: savedMaterialTotal + savedLabTotal + savedSpecialDoctorTotal, itemCount: result.items.length };
       if (result.commissionRefreshPending) {
         setError('Treatment costs were saved, but doctor commission refresh is still pending. Keep this window open and select Save Treatment Costs again to retry.');
         return;

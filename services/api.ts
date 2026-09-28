@@ -201,6 +201,46 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     api.materialCosts.getTotalsByTreatmentIds(treatmentIds, { idBatchSize: 50 })
   ]);
   if (paymentError && !isMissingRelationError(paymentError, 'payments')) throw new Error(paymentError.message);
+  const materialByPayment = await api.materialCosts.getTotalsByPaymentIds(
+    (paymentRows || []).map((row: any) => row.id).filter(Boolean),
+    { idBatchSize: 50 }
+  );
+  const treatmentRowById = new Map((treatmentRows || []).map((row: any) => [row.id, row]));
+  const paymentCostByTreatment = new Map<string, { totalAmount: number; specialDoctorTotal: number }>();
+  (paymentRows || []).forEach((payment: any) => {
+    const summary = materialByPayment[payment.id];
+    if (!summary || summary.totalAmount <= 0) return;
+    const linkedIds = Array.from(new Set([
+      ...(Array.isArray(payment.treatment_ids) ? payment.treatment_ids : []),
+      ...getPaymentReceiptTreatmentIds(payment)
+    ])).filter((id) => treatmentRowById.has(id));
+    if (linkedIds.length === 0) return;
+    const totalWeight = linkedIds.reduce(
+      (sum, id) => sum + Math.max(0, Number((treatmentRowById.get(id) as any)?.cost || 0)),
+      0
+    );
+    let allocatedTotal = 0;
+    let allocatedSpecialDoctor = 0;
+    linkedIds.forEach((id, index) => {
+      const isLast = index === linkedIds.length - 1;
+      const weight = totalWeight > 0
+        ? Math.max(0, Number((treatmentRowById.get(id) as any)?.cost || 0)) / totalWeight
+        : 1 / linkedIds.length;
+      const totalShare = isLast
+        ? roundMoney(summary.totalAmount - allocatedTotal)
+        : roundMoney(summary.totalAmount * weight);
+      const specialDoctorShare = isLast
+        ? roundMoney(summary.specialDoctorTotal - allocatedSpecialDoctor)
+        : roundMoney(summary.specialDoctorTotal * weight);
+      allocatedTotal = roundMoney(allocatedTotal + totalShare);
+      allocatedSpecialDoctor = roundMoney(allocatedSpecialDoctor + specialDoctorShare);
+      const current = paymentCostByTreatment.get(id) || { totalAmount: 0, specialDoctorTotal: 0 };
+      paymentCostByTreatment.set(id, {
+        totalAmount: roundMoney(current.totalAmount + totalShare),
+        specialDoctorTotal: roundMoney(current.specialDoctorTotal + specialDoctorShare)
+      });
+    });
+  });
 
   let customRows: any[] = [];
   if (doctorIds.length > 0) {
@@ -233,8 +273,8 @@ const recalculatePatientDoctorCommissions = async (patientId: string): Promise<v
     treatmentTypeId: row.treatment_type_id,
     date: row.date,
     cost: Math.max(0, Number(row.cost || 0)),
-    materialCost: materialByTreatment[row.id]?.totalAmount || 0,
-    specialDoctorCost: materialByTreatment[row.id]?.specialDoctorTotal || 0,
+    materialCost: (materialByTreatment[row.id]?.totalAmount || 0) + (paymentCostByTreatment.get(row.id)?.totalAmount || 0),
+    specialDoctorCost: (materialByTreatment[row.id]?.specialDoctorTotal || 0) + (paymentCostByTreatment.get(row.id)?.specialDoctorTotal || 0),
     commissionType: resolveDoctorCommissionType({
       commissionType: row.commission_type_snapshot ?? row.doctors?.commission_type,
       specialization: row.doctors?.specialization
@@ -3318,6 +3358,141 @@ export const api = {
         console.warn('Error fetching material cost totals:', err);
         throw err;
       }
+    },
+
+    getTotalsByPaymentIds: async (
+      paymentIds: string[],
+      options?: { idBatchSize?: number }
+    ): Promise<Record<string, TreatmentCostSummary>> => {
+      const uniqueIds = Array.from(new Set(paymentIds.filter(Boolean)));
+      if (uniqueIds.length === 0) return {};
+
+      const auditIdBatches = chunkUniqueIds(uniqueIds, options?.idBatchSize);
+      const auditBatches = await mapWithConcurrency(auditIdBatches, REPORT_REQUEST_CONCURRENCY, async (idBatch) => {
+        const { data, error } = await supabase
+          .from('audit_logs')
+          .select('id, source_id')
+          .eq('source_type', 'payment')
+          .in('source_id', idBatch);
+        if (error) {
+          if (isMissingRelationError(error, 'audit_logs')) {
+            throw new Error('Material cost tables are not installed yet. Run the latest Supabase migrations first.');
+          }
+          throw error;
+        }
+        return data || [];
+      });
+      const auditRows: any[] = auditBatches.flat();
+      const auditIds = auditRows.map((row: any) => row.id).filter(Boolean);
+      if (auditIds.length === 0) return {};
+
+      const materialBatches = await mapWithConcurrency(
+        chunkUniqueIds(auditIds, options?.idBatchSize),
+        REPORT_REQUEST_CONCURRENCY,
+        async (auditIdBatch) => {
+          const { data, error } = await supabase
+            .from('patient_material_costs')
+            .select('audit_log_id, cost_type, total_amount')
+            .in('audit_log_id', auditIdBatch);
+          if (error) throw error;
+          return data || [];
+        }
+      );
+      const sourceByAuditId = new Map(auditRows.map((row: any) => [row.id, row.source_id]));
+      return summarizeTreatmentCostRows(materialBatches.flat(), sourceByAuditId);
+    },
+
+    getByPaymentId: async (paymentId: string): Promise<{ auditLogId: string | null; items: PatientMaterialCost[] }> => {
+      const { data: auditLog, error: auditLogError } = await supabase
+        .from('audit_logs')
+        .select('id')
+        .eq('source_type', 'payment')
+        .eq('source_id', trimRequired(paymentId, 'Payment record'))
+        .maybeSingle();
+
+      if (auditLogError) {
+        if (isMissingRelationError(auditLogError, 'audit_logs')) {
+          throw new Error('Material cost tables are not installed yet. Run the latest Supabase migrations first.');
+        }
+        throw new Error(auditLogError.message);
+      }
+      if (!auditLog?.id) return { auditLogId: null, items: [] };
+
+      const { data, error } = await supabase
+        .from('patient_material_costs')
+        .select('*, users(username)')
+        .eq('audit_log_id', auditLog.id)
+        .order('created_at', { ascending: true });
+      if (error) throw new Error(error.message);
+      return { auditLogId: auditLog.id, items: (data || []).map(mapPatientMaterialCostRow) };
+    },
+
+    upsertForPayment: async (
+      payment: PaymentRecord,
+      treatmentContext: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] },
+      items: PatientMaterialCostInput[],
+      createdBy?: { userId?: string | null; username?: string | null; authToken?: string }
+    ): Promise<{ auditLogId: string; items: PatientMaterialCost[]; commissionRefreshPending: boolean }> => {
+      const paymentId = trimRequired(payment.id, 'Payment record');
+      const normalizedItems = items
+        .map((item) => ({
+          material_name: trimRequired(item.materialName, item.costType === 'lab' ? 'Lab cost name' : item.costType === 'special_doctor' ? 'Special doctor name' : 'Material name', { maxLength: 255 }),
+          cost_type: enumValue(item.costType, ['material', 'lab', 'special_doctor'] as const, 'Cost type'),
+          cost_amount: finiteNumber(item.costAmount, item.costType === 'lab' ? 'Lab cost' : item.costType === 'special_doctor' ? 'Special doctor cost' : 'Material cost', { min: 0.01 }),
+          quantity: finiteNumber(item.quantity, item.costType === 'lab' ? 'Lab quantity' : item.costType === 'special_doctor' ? 'Special doctor quantity' : 'Material quantity', { min: 0.01 })
+        }))
+        .filter((item) => item.material_name);
+      const groupedRecords = treatmentContext._groupedRecords?.length
+        ? treatmentContext._groupedRecords
+        : [treatmentContext];
+      const doctorIds = Array.from(new Set(groupedRecords.map((record) => record.doctor_id).filter(Boolean)));
+      const patientId = trimRequired(payment.patientId || treatmentContext.patient_id, 'Payment patient');
+      const auditPayload = {
+        source_type: 'payment' as AuditLogSourceType,
+        source_id: paymentId,
+        location_id: payment.location_id || treatmentContext.location_id || null,
+        patient_id: patientId,
+        doctor_id: doctorIds.length === 1 ? doctorIds[0] : null,
+        payment_id: paymentId
+      };
+      const { data: auditLog, error: auditLogError } = await supabase
+        .from('audit_logs')
+        .upsert(auditPayload, { onConflict: 'source_type,source_id' })
+        .select('id')
+        .single();
+      if (auditLogError) {
+        if (isMissingRelationError(auditLogError, 'audit_logs')) {
+          throw new Error('Material cost tables are not installed yet. Run the latest Supabase migrations first.');
+        }
+        throw new Error(auditLogError.message);
+      }
+
+      const auditLogId = auditLog.id;
+      const requestToken = generateRequestUuid();
+      const { data, error: replaceError } = await supabase.rpc('replace_treatment_costs', {
+        p_audit_log_id: auditLogId,
+        p_items: normalizedItems,
+        p_admin_user_id: createdBy?.userId || null,
+        p_admin_password: createdBy?.authToken || '',
+        p_request_token: requestToken
+      });
+      if (replaceError) {
+        throw new Error(String(replaceError.message || '').includes('replace_treatment_costs')
+          ? 'Payment-based MLS migration is not installed yet. Run the latest Supabase migrations first.'
+          : replaceError.message);
+      }
+
+      let commissionRefreshPending = false;
+      try {
+        await processPendingCommissionRecalculation(patientId, requestToken, {
+          userId: createdBy?.userId || '',
+          authToken: createdBy?.authToken || ''
+        });
+      } catch (commissionError) {
+        commissionRefreshPending = true;
+        console.error('Treatment costs were saved, but doctor commission refresh needs retry.', commissionError);
+      }
+      return { auditLogId, items: (data || []).map(mapPatientMaterialCostRow), commissionRefreshPending };
     },
 
     getByTreatmentId: async (treatmentId: string): Promise<{ auditLogId: string | null; items: PatientMaterialCost[] }> => {

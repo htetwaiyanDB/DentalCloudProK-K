@@ -194,4 +194,21 @@ describe('MLS save commission ledger write-path', () => {
     await api.materialCosts.getTotalsByTreatmentIds(ids);
     expect(callsFor('audit_logs', 'select')).toHaveLength(3);
   });
+
+  it('loads MLS totals by payment id without sharing costs between collection rows', async () => {
+    supabaseMock.state.auditRows = [
+      { id: 'payment-audit-1', source_id: 'payment-1' },
+      { id: 'payment-audit-2', source_id: 'payment-2' }
+    ];
+    supabaseMock.state.costRows = [
+      { audit_log_id: 'payment-audit-1', cost_type: 'material', total_amount: 100 },
+      { audit_log_id: 'payment-audit-2', cost_type: 'lab', total_amount: 250 }
+    ];
+
+    const totals = await api.materialCosts.getTotalsByPaymentIds(['payment-1', 'payment-2']);
+
+    expect(totals['payment-1']).toMatchObject({ materialTotal: 100, labTotal: 0, totalAmount: 100 });
+    expect(totals['payment-2']).toMatchObject({ materialTotal: 0, labTotal: 250, totalAmount: 250 });
+    expect(callsFor('audit_logs', 'eq')).toContainEqual(expect.objectContaining({ args: ['source_type', 'payment'] }));
+  });
 });
