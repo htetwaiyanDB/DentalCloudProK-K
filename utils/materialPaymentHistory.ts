@@ -1,4 +1,4 @@
-import type { ClinicalRecord, PaymentRecord } from '../types';
+import type { ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
 import { allocateCommissionablePayments } from './doctorCommissionLedger';
 import {
   dedupePaymentRecords,
@@ -8,7 +8,7 @@ import {
 
 export interface MaterialPaymentHistoryRow {
   id: string;
-  payment: PaymentRecord;
+  payment: PaymentRecord | null;
   date: string;
   sortDate: string;
   receiptNumber: string;
@@ -121,6 +121,28 @@ export interface MaterialPaymentHistoryFilters {
   doctorSearchTerm: string;
   treatmentSearchTerm: string;
 }
+
+/** Legacy fees stay on their original treatment, never copied to each collection. */
+export const buildLegacyMaterialHistoryRows = (
+  records: ClinicalRecord[],
+  summaries: Record<string, TreatmentCostSummary>
+): MaterialPaymentHistoryRow[] => records.filter((record) => summaries[record.id]?.itemCount > 0).map((record) => ({
+  id: `treatment:${record.id}`,
+  payment: null,
+  date: record.date,
+  sortDate: record.date,
+  receiptNumber: 'Treatment-linked costs',
+  patientId: record.patient_id,
+  patientName: record.patient_name || 'Unknown',
+  patientUniqueId: record.patient_unique_id || record.patient_id,
+  doctorNames: record.doctor_name ? [record.doctor_name] : [],
+  treatmentNames: record.description ? [record.description] : [],
+  treatmentIds: [record.id],
+  totalPaid: 0,
+  appliedToTreatment: 0,
+  balanceAfter: money(record.patient_balance),
+  doctorEarned: 0
+}));
 
 export const filterMaterialPaymentHistoryRows = (
   rows: MaterialPaymentHistoryRow[],

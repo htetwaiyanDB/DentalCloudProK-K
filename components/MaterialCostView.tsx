@@ -6,7 +6,7 @@ import { formatCurrency, type Currency } from '../utils/currency';
 import { toLocalISODate } from '../utils/auditLogFilters';
 import { formatTeethWithPosition } from '../utils/toothNumbering';
 import { formatDoctorName, normalizeDoctorName } from '../utils/doctorName';
-import { buildMaterialPaymentHistoryRows, filterMaterialPaymentHistoryRows } from '../utils/materialPaymentHistory';
+import { buildLegacyMaterialHistoryRows, buildMaterialPaymentHistoryRows, filterMaterialPaymentHistoryRows } from '../utils/materialPaymentHistory';
 import Pagination from './Pagination';
 import MaterialCostModal from './MaterialCostModal';
 
@@ -26,7 +26,7 @@ interface MaterialCostViewProps {
 type MaterialCostFilter = 'all' | 'tomorrow' | 'today' | 'custom';
 type MaterialCostRow = {
   paymentId: string;
-  payment: PaymentRecord;
+  payment: PaymentRecord | null;
   collectedAmount: number;
   doctorEarned: number;
   record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] };
@@ -39,6 +39,7 @@ const getTreatmentRecordIds = (record: ClinicalRecord & { _groupedRecords?: Clin
 
 const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRecords, loading, currency, canManageMaterials, onRefresh, onCostsSaved, doctors }) => {
   const summaryRequestVersion = React.useRef(0);
+  const legacyRequestVersion = React.useRef(0);
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
@@ -49,7 +50,14 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isTableScrollable, setIsTableScrollable] = useState(false);
   const [editingRow, setEditingRow] = useState<MaterialCostRow | null>(null);
-  const [materialSummaries, setMaterialSummaries] = useState<Record<string, TreatmentCostSummary>>({});
+  const [paymentSummaries, setMaterialSummaries] = useState<Record<string, TreatmentCostSummary>>({});
+  const [legacySummaries, setLegacySummaries] = useState<Record<string, TreatmentCostSummary>>({});
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [legacySummaryError, setLegacySummaryError] = useState<string | null>(null);
+  const materialSummaries = useMemo(() => ({
+    ...paymentSummaries,
+    ...Object.fromEntries(Object.entries(legacySummaries).map(([id, summary]) => [`treatment:${id}`, summary]))
+  }), [paymentSummaries, legacySummaries]);
   const todayKey = useMemo(() => toLocalISODate(new Date()), []);
   const tomorrowKey = useMemo(() => {
     const tomorrow = new Date();
@@ -63,10 +71,11 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
 
   const paymentHistoryRows = useMemo(
     () => filterMaterialPaymentHistoryRows(
-      buildMaterialPaymentHistoryRows(records, paymentRecords),
+      [...buildMaterialPaymentHistoryRows(records, paymentRecords), ...buildLegacyMaterialHistoryRows(records, legacySummaries)]
+        .sort((a, b) => b.sortDate.localeCompare(a.sortDate) || b.id.localeCompare(a.id)),
       { dateFrom, dateTo, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm }
     ),
-    [records, paymentRecords, dateFrom, dateTo, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm]
+    [records, paymentRecords, legacySummaries, dateFrom, dateTo, patientSearchTerm, doctorSearchTerm, treatmentSearchTerm]
   );
 
   const statusFilteredRows = useMemo<MaterialCostRow[]>(() => {
@@ -106,7 +115,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
 
   const loadMaterialSummaries = React.useCallback(async (rowsToLoad: MaterialCostRow[]) => {
     const requestVersion = ++summaryRequestVersion.current;
-    const paymentIds = rowsToLoad.map((row) => row.paymentId).filter(Boolean);
+    const paymentIds = rowsToLoad.flatMap((row) => row.payment ? [row.payment.id] : []);
     if (paymentIds.length === 0) {
       return;
     }
@@ -114,6 +123,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     try {
       const summaries = await api.materialCosts.getTotalsByPaymentIds(paymentIds);
       if (requestVersion !== summaryRequestVersion.current) return;
+      setSummaryError(null);
       setMaterialSummaries((current) => {
         const next = { ...current };
         paymentIds.forEach((paymentId) => {
@@ -123,8 +133,21 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
       });
     } catch (error) {
       console.warn('Unable to refresh material cost summaries. Keeping current table totals.', error);
+      setSummaryError('Unable to load payment-linked MLS costs. Please refresh to retry.');
     }
   }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const requestVersion = ++legacyRequestVersion.current;
+    api.materialCosts.getTotalsByTreatmentIds(records.map((record) => record.id), { requireCostTables: true })
+      .then((summaries) => { if (!cancelled && requestVersion === legacyRequestVersion.current) { setLegacySummaries(summaries); setLegacySummaryError(null); } })
+      .catch((error) => {
+        console.warn('Unable to load treatment-linked MLS costs.', error);
+        if (!cancelled && requestVersion === legacyRequestVersion.current) setLegacySummaryError('Unable to load treatment-linked MLS costs. Please refresh to retry.');
+      });
+    return () => { cancelled = true; };
+  }, [records]);
 
   const renderPatientBalance = (balance?: number | null) => {
     if (balance === null || balance === undefined) return <span className="text-slate-400">-</span>;
@@ -245,6 +268,11 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   };
 
   const handleMaterialSaved = async (summary: TreatmentCostSummary & { paymentId: string; patientId?: string | null }) => {
+    ++summaryRequestVersion.current;
+    ++legacyRequestVersion.current;
+    if (summary.paymentId.startsWith('treatment:')) {
+      setLegacySummaries((current) => ({ ...current, [summary.paymentId.slice('treatment:'.length)]: summary }));
+    }
     setMaterialSummaries((current) => {
       const next = { ...current };
       if (summary.itemCount > 0 && summary.totalAmount > 0) {
@@ -273,7 +301,8 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     } else {
       await onRefresh();
     }
-    await loadMaterialSummaries(paginatedRows);
+    // The paginatedRows effect reloads the current page after the patient refresh.
+    // Do not start a request for the pre-save page: a deleted legacy row can shift it.
   };
 
   const handleRefresh = async () => {
@@ -533,7 +562,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                   return (
                     <tr key={`material-cost-${row.paymentId}`} className="group border-l-4 border-[var(--hover-300)] transition-colors hover:bg-[var(--hover-50)]/30">
                       <td className="whitespace-nowrap px-4 py-4 text-sm text-slate-500 xl:px-6">{record.date}</td>
-                      <td className="px-4 py-4 font-bold text-slate-900 xl:px-6">{record.patient_name || 'Unknown'}</td>
+                      <td className="px-4 py-4 font-bold text-slate-900 xl:px-6">{record.patient_name || 'Unknown'}{!row.payment && <span className="mt-1 block text-xs font-semibold text-amber-700">Treatment-linked costs (no collection)</span>}</td>
                       <td className="px-4 py-4 text-sm text-slate-700 xl:px-6">{formatDoctorName(record.doctor_name)}</td>
                       <td className="max-w-md px-4 py-4 text-sm text-slate-700 xl:px-6">
                         {renderTreatmentDescriptionList(record)}
@@ -596,6 +625,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                     <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <p className="break-words text-base font-bold text-slate-900">{record.patient_name || 'Unknown'}</p>
+                        {!row.payment && <p className="mt-1 text-xs font-semibold text-amber-700">Treatment-linked costs (no collection)</p>}
                         <p className="mt-1 break-words text-xs text-slate-500">{record.date} · {formatDoctorName(record.doctor_name)}</p>
                       </div>
                       <div className={`shrink-0 rounded-lg px-2.5 py-1 text-right ${netProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
@@ -701,6 +731,8 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
         onClose={() => setEditingRow(null)}
         onSaved={handleMaterialSaved}
       />
+      {summaryError && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{summaryError}</p>}
+      {legacySummaryError && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{legacySummaryError}</p>}
     </div>
   );
 };

@@ -47,10 +47,10 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
   const presetRequestVersion = React.useRef(0);
 
   React.useEffect(() => {
-    if (!isOpen || !payment || !record) return;
+    if (!isOpen || !record) return;
     let cancelled = false;
     setLoading(true); setSaving(false); setError(null); setLoadFailed(false);
-    api.materialCosts.getByPaymentId(payment.id).then(({ items: saved }) => {
+    (payment ? api.materialCosts.getByPaymentId(payment.id) : api.materialCosts.getByTreatmentId(record.id)).then(({ items: saved }) => {
       if (cancelled) return;
       const drafts: CostDraft[] = saved.map((item) => ({ localId: item.id, materialName: item.materialName, costType: item.costType, costAmount: item.costAmount, quantity: item.quantity, doctorId: item.doctorId, isPristine: false }));
       if (!drafts.some((item) => item.costType === 'material')) drafts.push(createEmptyDraft('material'));
@@ -91,14 +91,14 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
   }, []);
 
   React.useEffect(() => {
-    if (!isOpen || !payment || !record) return;
+    if (!isOpen || !record) return;
     setShowPresetManager(false);
     setPresetManagerError(null);
     void loadPresets();
     return () => { presetRequestVersion.current += 1; };
   }, [isOpen, payment, record, loadPresets]);
 
-  if (!isOpen || !payment || !record) return null;
+  if (!isOpen || !record) return null;
   const updateItem = (id: string, patch: Partial<CostDraft>) => setItems((current) => current.map((item) => item.localId === id ? { ...item, ...patch, isPristine: false } : item));
   const removeItem = (id: string, type: TreatmentCostType) => setItems((current) => {
     const remaining = current.filter((item) => item.localId !== id);
@@ -156,7 +156,11 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
       if (!session.staffAuthToken) throw new Error('Your staff session needs a one-time refresh. Sign out and sign back in, then save again.');
       const incomplete = visibleItems.find((item) => !item.materialName.trim() || Number(item.costAmount) <= 0 || Number(item.quantity) <= 0);
       if (incomplete) throw new Error(`Each ${incomplete.costType === 'lab' ? 'lab cost' : incomplete.costType === 'special_doctor' ? 'special doctor cost' : 'material'} needs a name, a cost greater than zero, and a quantity greater than zero.`);
-      const result = await api.materialCosts.upsertForPayment(payment, record, visibleItems.map((item) => ({ materialName: item.materialName.trim(), costType: item.costType, costAmount: Number(item.costAmount), quantity: Number(item.quantity), doctorId: item.costType === 'special_doctor' ? item.doctorId || null : null })), { userId: session.userId, username: session.username, authToken: session.staffAuthToken });
+      const costItems = visibleItems.map((item) => ({ materialName: item.materialName.trim(), costType: item.costType, costAmount: Number(item.costAmount), quantity: Number(item.quantity), doctorId: item.costType === 'special_doctor' ? item.doctorId || null : null }));
+      const actor = { userId: session.userId, username: session.username, authToken: session.staffAuthToken };
+      const result = payment
+        ? await api.materialCosts.upsertForPayment(payment, record, costItems, actor)
+        : await api.materialCosts.upsertForTreatment(record, costItems, actor);
       const materialRows = result.items.filter((item) => item.costType === 'material');
       const labRows = result.items.filter((item) => item.costType === 'lab');
       const specialDoctorRows = result.items.filter((item) => item.costType === 'special_doctor');
@@ -165,7 +169,7 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
       const savedSpecialDoctorTotal = specialDoctorRows.reduce((sum, item) => sum + item.totalAmount, 0);
       const assignedSpecialDoctorRows = specialDoctorRows.filter((item) => item.doctorId);
       const assignedSpecialDoctorTotal = assignedSpecialDoctorRows.reduce((sum, item) => sum + item.totalAmount, 0);
-      const summary = { paymentId: payment.id, patientId: payment.patientId || record.patient_id || record._groupedRecords?.[0]?.patient_id || null, auditLogId: result.auditLogId, materialTotal: savedMaterialTotal, materialItemCount: materialRows.length, labTotal: savedLabTotal, labItemCount: labRows.length, specialDoctorTotal: savedSpecialDoctorTotal, specialDoctorItemCount: specialDoctorRows.length, assignedSpecialDoctorTotal, assignedSpecialDoctorItemCount: assignedSpecialDoctorRows.length, totalAmount: savedMaterialTotal + savedLabTotal + savedSpecialDoctorTotal, itemCount: result.items.length };
+      const summary = { paymentId: payment?.id || `treatment:${record.id}`, patientId: payment?.patientId || record.patient_id || record._groupedRecords?.[0]?.patient_id || null, auditLogId: result.auditLogId, materialTotal: savedMaterialTotal, materialItemCount: materialRows.length, labTotal: savedLabTotal, labItemCount: labRows.length, specialDoctorTotal: savedSpecialDoctorTotal, specialDoctorItemCount: specialDoctorRows.length, assignedSpecialDoctorTotal, assignedSpecialDoctorItemCount: assignedSpecialDoctorRows.length, totalAmount: savedMaterialTotal + savedLabTotal + savedSpecialDoctorTotal, itemCount: result.items.length };
       if (result.commissionRefreshPending) {
         setError('Treatment costs were saved, but doctor commission refresh is still pending. Keep this window open and select Save Treatment Costs again to retry.');
         return;
@@ -200,6 +204,7 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
   };
 
   return <Modal title="MLS Costs" onClose={onClose} closeDisabled={saving || presetsSaving} maxWidthClassName="max-w-5xl"><form onSubmit={handleSubmit} className="space-y-5">
+    {!payment && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-800">These costs belong to the original treatment, not a payment. Saving keeps them on that treatment without copying them to partial collections.</p>}
     <div className="grid gap-3 rounded-2xl border border-[var(--hover-100)] bg-[var(--hover-50)]/70 p-4 sm:grid-cols-3"><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-[var(--hover-700)]">Patient</p><p className="mt-1 text-sm font-bold text-slate-900">{record.patient_name || 'Unknown'}</p></div><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-[var(--hover-700)]">Clinician</p><p className="mt-1 text-sm font-bold text-slate-900">{formatDoctorName(record.doctor_name)}</p></div><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-[var(--hover-700)]">Clinical Activity</p><p className="mt-1 text-sm font-bold text-slate-900">{getRecordActivity(record)}</p></div></div>
     <section aria-labelledby="cost-presets-heading" className="rounded-2xl border border-[var(--hover-100)] bg-[var(--hover-50)]/50 p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h3 id="cost-presets-heading" className="text-sm font-black text-slate-900">Frequently Used Costs</h3><p className="mt-0.5 text-xs text-slate-500">Select a preset to add an editable row with quantity 1.</p></div><button type="button" onClick={() => { setPresetManagerError(null); setShowPresetManager(true); }} disabled={presetsLoading || saving} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[var(--hover-200)] bg-white px-4 py-2 text-sm font-bold text-[var(--hover-700)] hover:bg-[var(--hover-50)] disabled:opacity-50"><Settings2 size={16} />Manage Presets</button></div>
