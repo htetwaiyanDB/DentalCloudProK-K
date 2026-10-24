@@ -153,6 +153,54 @@ describe('buildPatientReport', () => {
     expect(report.treatmentLedger.flatMap((item) => item.payments).reduce((sum, item) => sum + item.amount, 0)).toBe(200);
   });
 
+  it('attributes an unlinked final balance payment made on a later day', () => {
+    const report = buildPatientReport({
+      patient,
+      appointments: [],
+      treatments: [treatment({ cost: 300_000, date: '2026-10-20' })],
+      medicineSales: [],
+      payments: [
+        payment({ id: 'first', amount: 200_000, clearedAmount: 200_000, treatmentIds: ['treatment-1'], date: '2026-10-20' }),
+        payment({ id: 'final', amount: 100_000, clearedAmount: 100_000, treatmentIds: [], date: '2026-10-21' })
+      ],
+      doctors: [],
+      currency: 'MMK'
+    });
+
+    expect(report.treatmentLedger[0]).toMatchObject({ paid: 300_000, balance: 0 });
+    expect(report.treatmentLedger[0].payments.map((item) => item.id)).toEqual(['final', 'first']);
+  });
+
+  it('uses manual payment service fees, avoids appointment duplicates, and ignores voided fees', () => {
+    const serviceFeeSnapshot = {
+      version: 1 as const,
+      receiptType: 'PAYMENT' as const,
+      receiptNumber: 'FEE-1',
+      receiptDate: '2026-07-10',
+      currency: 'USD' as const,
+      clinic: { appName: 'Clinic', headerTitle: 'Receipt', email: '', phone: '' },
+      patient: { id: patient.id, name: patient.name },
+      payment: { amountPaid: 50, method: 'CASH' as const, status: 'FULL' as const, balanceBefore: 50, balanceAfter: 0, serviceFeeAmount: 50 },
+      treatments: [],
+      medicines: []
+    };
+    const report = buildPatientReport({
+      patient,
+      appointments: [appointment({ clinical_fee_status: 'APPLIED', clinical_fee_amount: 50 })],
+      treatments: [],
+      medicineSales: [],
+      payments: [
+        payment({ id: 'manual-fee', amount: 50, receiptSnapshot: serviceFeeSnapshot, date: '2026-07-10' }),
+        payment({ id: 'voided-fee', amount: 80, receiptSnapshot: { ...serviceFeeSnapshot, receiptNumber: 'FEE-VOID', payment: { ...serviceFeeSnapshot.payment, serviceFeeAmount: 80 } }, date: '2026-07-11', voidedAt: '2026-07-11T10:00:00Z' })
+      ],
+      doctors: [],
+      currency: 'USD'
+    });
+
+    expect(report.serviceFeeValue).toBe(50);
+    expect(report.careValue).toBe(50);
+  });
+
   it('keeps minor-unit rounding consistent across attributed payment details', () => {
     const report = buildPatientReport({
       patient, appointments: [],

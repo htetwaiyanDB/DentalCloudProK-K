@@ -1,10 +1,11 @@
-import { Appointment, AppointmentRescheduleLog, ClinicalRecord, Doctor, Expense, Medicine, Patient, PaymentRecord } from '../types';
+import { Appointment, AppointmentRescheduleLog, ClinicalRecord, Doctor, Expense, Medicine, Patient, PaymentRecord, TreatmentCostSummary } from '../types';
 import { Currency } from './currency';
 import { usesFlatVisitCommission } from './doctorCommission';
 import { buildAuditLogExportTableRows, buildAuditLogRows, filterAuditLogRowsForExport, type AuditLogFilterOptions } from './auditLogExport';
 import { formatAppointmentNotesForDisplay } from './appointmentClinicalFocus';
 import { formatDoctorName, normalizeDoctorName } from './doctorName';
 import { buildRecallsCancelsExportRows, type RecallsCancelsExportRow } from './recallsCancels';
+import { materialCostExportFilename, type MaterialCostExportRow } from './materialCostExport';
 
 type ExcelPrimitive = string | number;
 type ExcelRow = Record<string, ExcelPrimitive>;
@@ -298,6 +299,7 @@ interface ClinicalRecordsExcelExportOptions extends AuditLogFilterOptions {
   payments?: PaymentRecord[];
   rescheduleLogs?: AppointmentRescheduleLog[];
   includeAppointments?: boolean;
+  costSummaries?: Record<string, TreatmentCostSummary>;
 }
 
 export const exportClinicalRecordsToExcel = async (records: ClinicalRecord[], currency: Currency, options: ClinicalRecordsExcelExportOptions = {}) => {
@@ -312,13 +314,14 @@ export const exportClinicalRecordsToExcel = async (records: ClinicalRecord[], cu
     { header: 'Amount', width: 14, format: 'currency' },
     { header: 'Discount', width: 14, format: 'currency' },
     { header: 'Service Charges', width: 18, format: 'currency' },
+    { header: 'MLS Costs', width: 18, format: 'currency' },
     { header: 'Doctor Earned', width: 18, format: 'currency' }
   ];
   const exportRows = filterAuditLogRowsForExport(
     buildAuditLogRows(records, options.appointments || [], options.includeAppointments ?? false, options.payments || [], options.rescheduleLogs || []),
     options
   );
-  const rows = buildAuditLogExportTableRows(exportRows, currency).map((row) => ({
+  const rows = buildAuditLogExportTableRows(exportRows, currency, options.costSummaries).map((row) => ({
     Type: row.type,
     'Date / Time': row.dateTime,
     Patient: row.patient,
@@ -329,6 +332,7 @@ export const exportClinicalRecordsToExcel = async (records: ClinicalRecord[], cu
     Amount: row.amount ?? 0,
     Discount: row.discount === null ? 0 : -row.discount,
     'Service Charges': row.serviceCharges ?? 0,
+    'MLS Costs': row.mlsCosts ?? 0,
     'Doctor Earned': row.doctorEarned ?? 0
   }));
 
@@ -340,6 +344,24 @@ export const exportClinicalRecordsToExcel = async (records: ClinicalRecord[], cu
     currency,
     { compactHeader: true, freezeHeader: true }
   );
+};
+
+export const exportMaterialCostsToExcel = async (rows: MaterialCostExportRow[], currency: Currency) => {
+  const columns: ExcelColumn[] = [
+    { header: 'Date', width: 14 }, { header: 'Patient ID', width: 18 }, { header: 'Patient', width: 24 },
+    { header: 'Clinician', width: 22 }, { header: 'Treatments', width: 36 },
+    { header: 'Treatment Production', width: 20, format: 'currency' }, { header: 'Collected Payment', width: 20, format: 'currency' },
+    { header: 'Material Cost', width: 16, format: 'currency' }, { header: 'Lab Cost', width: 16, format: 'currency' },
+    { header: 'Special Doctor Cost', width: 20, format: 'currency' }, { header: 'MLS Total', width: 16, format: 'currency' },
+    { header: 'Doctor Earned', width: 18, format: 'currency' }, { header: 'Net Profit', width: 18, format: 'currency' },
+    { header: 'Patient Balance', width: 18, format: 'currency' }
+  ];
+  await saveWorkbook(rows.map(row => ({
+    Date: row.date, 'Patient ID': row.patientId, Patient: row.patientName, Clinician: row.clinician, Treatments: row.treatments,
+    'Treatment Production': row.treatmentProduction, 'Collected Payment': row.collectedPayment, 'Material Cost': row.materialCost,
+    'Lab Cost': row.labCost, 'Special Doctor Cost': row.specialDoctorCost, 'MLS Total': row.mlsTotal,
+    'Doctor Earned': row.doctorEarned, 'Net Profit': row.netProfit, 'Patient Balance': row.patientBalance
+  })), columns, 'MLS Costs', materialCostExportFilename('xlsx'), currency, { compactHeader: true, freezeHeader: true });
 };
 
 export const exportDoctorsToExcel = async (doctors: Doctor[]) => {

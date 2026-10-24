@@ -9,6 +9,10 @@ import { formatDoctorName, normalizeDoctorName } from '../utils/doctorName';
 import { buildLegacyMaterialHistoryRows, buildMaterialPaymentHistoryRows, filterMaterialPaymentHistoryRows } from '../utils/materialPaymentHistory';
 import Pagination from './Pagination';
 import MaterialCostModal from './MaterialCostModal';
+import ExportMenu from './ExportMenu';
+import { exportMaterialCostsToPDF } from '../utils/pdfExport';
+import { exportMaterialCostsToExcel } from '../utils/excelExport';
+import type { MaterialCostExportRow } from '../utils/materialCostExport';
 
 interface MaterialCostViewProps {
   records: ClinicalRecord[];
@@ -54,6 +58,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   const [legacySummaries, setLegacySummaries] = useState<Record<string, TreatmentCostSummary>>({});
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [legacySummaryError, setLegacySummaryError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const materialSummaries = useMemo(() => ({
     ...paymentSummaries,
     ...Object.fromEntries(Object.entries(legacySummaries).map(([id, summary]) => [`treatment:${id}`, summary]))
@@ -318,6 +323,52 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     }
   };
 
+  const buildExportRows = async (): Promise<MaterialCostExportRow[]> => {
+    const paymentIds = statusFilteredRows.flatMap((row) => row.payment ? [row.payment.id] : []);
+    const freshPaymentSummaries = paymentIds.length > 0 ? await api.materialCosts.getTotalsByPaymentIds(paymentIds) : {};
+    const summaries = { ...materialSummaries, ...freshPaymentSummaries };
+    return statusFilteredRows.map((row) => {
+      const summary = summaries[row.paymentId];
+      const groupedRecords = row.record._groupedRecords?.length ? row.record._groupedRecords : [row.record];
+      const treatmentProduction = groupedRecords.reduce((sum, record) => sum + Number(record.cost || 0), 0);
+      const materialCost = Number(summary?.materialTotal || 0);
+      const labCost = Number(summary?.labTotal || 0);
+      const specialDoctorCost = Number(summary?.specialDoctorTotal || 0);
+      const mlsTotal = Number(summary?.totalAmount || 0);
+      return {
+        date: row.record.date || '',
+        patientId: row.record.patient_unique_id || row.record.patient_id || '-',
+        patientName: row.record.patient_name || 'Unknown',
+        clinician: formatDoctorName(row.record.doctor_name),
+        treatments: groupedRecords.map((record) => record.description || 'Treatment').join('; '),
+        treatmentProduction,
+        collectedPayment: row.collectedAmount,
+        materialCost,
+        labCost,
+        specialDoctorCost,
+        mlsTotal,
+        doctorEarned: row.doctorEarned,
+        netProfit: row.collectedAmount - mlsTotal - row.doctorEarned,
+        patientBalance: Number(row.record.patient_balance || 0)
+      };
+    });
+  };
+
+  const handleExport = async (format: 'pdf' | 'excel') => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const rows = await buildExportRows();
+      if (format === 'pdf') exportMaterialCostsToPDF(rows, currency);
+      else await exportMaterialCostsToExcel(rows, currency);
+    } catch (error) {
+      console.error('MLS cost export failed:', error);
+      alert(error instanceof Error ? error.message : 'Unable to export MLS costs. Please try again.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const materialFilterOptions: Array<{ value: MaterialCostFilter; label: string }> = [
     { value: 'all', label: 'All' },
     { value: 'tomorrow', label: 'Tomorrow' },
@@ -380,16 +431,6 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                     {statusFilteredRows.length} payments
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void handleRefresh()}
-                  disabled={loading || isRefreshing}
-                  aria-label={isRefreshing ? 'Refreshing treatment costs' : 'Refresh treatment costs'}
-                  className="refresh-action-button inline-flex min-h-9 items-center justify-center gap-2 rounded-xl border px-3 py-1.5 font-bold focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)]"
-                >
-                  <RotateCw size={14} className={`refresh-action-icon ${isRefreshing ? 'animate-spin' : ''}`} />
-                  {isRefreshing ? 'Refreshing...' : 'Refresh'}
-                </button>
               </div>
             </div>
           </div>
@@ -470,7 +511,8 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                     </button>
                   </div>
                 </div>
-                <div className="grid w-full grid-cols-3 rounded-xl border border-slate-200 bg-slate-50 p-1 sm:w-auto sm:min-w-[240px] xl:ml-3 xl:flex-none">
+                <div className="w-full sm:w-auto sm:min-w-[240px] xl:ml-3 xl:flex-none">
+                  <div className="grid w-full grid-cols-3 rounded-xl border border-slate-200 bg-slate-50 p-1">
                     {materialFilterOptions.map((item) => (
                       <button
                         key={item.value}
@@ -485,6 +527,26 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                         {item.label}
                       </button>
                     ))}
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleRefresh()}
+                      disabled={loading || isRefreshing}
+                      aria-label={isRefreshing ? 'Refreshing treatment costs' : 'Refresh treatment costs'}
+                      className="refresh-action-button inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[var(--hover-300)]"
+                    >
+                      <RotateCw size={14} className={`refresh-action-icon ${isRefreshing ? 'animate-spin' : ''}`} />
+                      {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                    </button>
+                    <ExportMenu
+                      disabled={loading || exporting || statusFilteredRows.length === 0}
+                      onExportPDF={() => void handleExport('pdf')}
+                      onExportExcel={() => void handleExport('excel')}
+                      className="!min-h-10 !w-full !rounded-xl !text-xs !font-bold"
+                      buttonLabelClassName="inline"
+                    />
+                  </div>
                 </div>
               </div>
             </div>

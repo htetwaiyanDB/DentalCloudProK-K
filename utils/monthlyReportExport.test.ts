@@ -15,17 +15,20 @@ const report: MonthlyReport = {
   rows: [{
     treatmentId: 'treatment-1', date: '2026-07-10', patientId: 'patient-1', patientName: 'Aye Aye', age: 35,
     phone: '0912345', city: 'Yangon', township: 'Bahan', patientType: 'Walk-in', treatment: 'Crown', doctor: 'Doctor One',
-    cost: 100000, payment: 60000, balance: 40000, materialCost: 10000, labCost: 5000, specialDoctorCost: 0, doctorCost: 20000,
+    standardCost: 100000, discount: 0, cost: 100000, payment: 60000, balance: 40000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000,
+    materialCost: 10000, labCost: 5000, specialDoctorCost: 0, mlsTotal: 15000, doctorCost: 20000,
     totalCost: 35000, netProfit: 65000, netMargin: 0.65
   }],
   summary: {
-    treatmentCount: 1, patientCount: 1, production: 100000, payment: 60000, balance: 40000,
-    materialCost: 10000, labCost: 5000, specialDoctorCost: 0, doctorCost: 20000, totalCost: 35000, netProfit: 65000,
+    treatmentCount: 1, patientCount: 1, standardProduction: 100000, discount: 0, production: 100000, payment: 60000, balance: 40000,
+    serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, materialCost: 10000, labCost: 5000, specialDoctorCost: 0,
+    mlsTotal: 15000, doctorCost: 20000, operatingExpenses: 0, totalCost: 35000, netProfit: 65000,
     netMargin: 0.65, collectionRate: 0.6
   },
-  byTreatment: [{ name: 'Crown', treatments: 1, patients: 1, production: 100000, payment: 60000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
-  byDoctor: [{ name: 'Doctor One', treatments: 1, patients: 1, production: 100000, payment: 60000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
-  byPatientType: [{ name: 'Walk-in', treatments: 1, patients: 1, production: 100000, payment: 60000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }]
+  byTreatment: [{ name: 'Crown', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
+  byDoctor: [{ name: 'Doctor One', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
+  byPatientType: [{ name: 'Walk-in', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
+  expenses: []
 };
 
 describe('monthly report Excel workbook', () => {
@@ -33,7 +36,7 @@ describe('monthly report Excel workbook', () => {
     const workbook = await buildMonthlyReportExcelWorkbook(report, metadata);
 
     expect(workbook.SheetNames).toEqual([
-      'Executive Summary', 'Treatment Detail', 'By Treatment', 'By Clinician', 'By Patient Type'
+      'Executive Summary', 'Treatment Detail', 'By Treatment', 'By Clinician', 'By Patient Type', 'Operating Expenses'
     ]);
 
     const summary = workbook.Sheets['Executive Summary'];
@@ -42,8 +45,9 @@ describe('monthly report Excel workbook', () => {
     expect(summary.D5.v).toBe('REVENUE & COLLECTIONS');
     expect(summary.G5.v).toBe('COSTS & PROFITABILITY');
     expect(summary.E6.z).toBe('#,##0" Ks"');
-    expect(summary.E9.z).toBe('0.0%');
-    expect(summary.H11.z).toBe('0.0%');
+    expect(summary.E9.z).toBe('#,##0" Ks"');
+    expect(summary.H13.z).toBe('#,##0" Ks"');
+    expect(summary.H14.z).toBe('0.0%');
     expect(summary.A1.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: '0F172A' } },
       font: { bold: true, color: { rgb: 'FFFFFF' } }
@@ -52,7 +56,7 @@ describe('monthly report Excel workbook', () => {
       fill: { patternType: 'solid', fgColor: { rgb: '4F46E5' } },
       border: { bottom: { style: 'medium' } }
     });
-    expect(summary.H10.s).toMatchObject({
+    expect(summary.H13.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: 'DCFCE7' } },
       font: { color: { rgb: '166534' } }
     });
@@ -64,18 +68,18 @@ describe('monthly report Excel workbook', () => {
     expect(detail.B4.v).toBe('Patient Name');
     expect(detail.F4.v).toBe('Township');
     expect(detail.F5.v).toBe('Bahan');
-    expect(detail.J4.v).toBe('Total Cost');
-    expect(detail.L4.v).toBe('Receivable Balance');
-    expect(detail.P4.v).toBe('Doctor RF');
+    expect(detail.J4.v).toBe('Standard Production');
+    expect(detail.L4.v).toBe('Treatment Production');
+    expect(detail.V4.v).toBe('Doctor RF');
     expect(detail.A6.v).toBe('REPORT TOTAL');
     expect(detail.J5.z).toBe('#,##0" Ks"');
-    expect(detail.S5.z).toBe('0.0%');
+    expect(detail.Y5.z).toBe('0.0%');
     expect(detail.A4.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: '4F46E5' } },
       border: { left: { style: 'medium' } }
     });
     expect(detail.A5.s).toMatchObject({ border: { bottom: { style: 'thin' } } });
-    expect(detail.R5.s).toMatchObject({ fill: { fgColor: { rgb: 'DCFCE7' } } });
+    expect(detail.X5.s).toMatchObject({ fill: { fgColor: { rgb: 'DCFCE7' } } });
     expect(detail.B6.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: 'E2E8F0' } },
       border: { top: { style: 'medium' }, bottom: { style: 'medium' } }
@@ -84,14 +88,15 @@ describe('monthly report Excel workbook', () => {
       fill: { patternType: 'solid', fgColor: { rgb: 'E2E8F0' } },
       border: { top: { style: 'medium' } }
     });
-    expect(detail['!autofilter']).toEqual({ ref: 'A4:S5' });
+    expect(detail['!autofilter']).toEqual({ ref: 'A4:Y5' });
     expect(detail['!freeze']).toMatchObject({ ySplit: 4, topLeftCell: 'A5' });
     expect(detail['!cols'][7].wch).toBe(32);
 
     const clinician = workbook.Sheets['By Clinician'];
     expect(clinician.A1.v).toBe('CLINICIAN PERFORMANCE');
     expect(clinician.A4.v).toBe('Clinician');
-    expect(clinician.D4.v).toBe('Total Cost');
+    expect(clinician.E4.v).toBe('Treatment Production');
+    expect(clinician.J4.v).toBe('MLS Total');
     expect(clinician.A6.v).toBe('REPORT TOTAL');
   });
 
@@ -105,12 +110,12 @@ describe('monthly report Excel workbook', () => {
     expect(detail.F5.v).toBe('Bahan');
     expect(detail.J5.v).toBe(100000);
     expect(detail.J5.z).toBe('#,##0" Ks"');
-    expect(detail.S5.v).toBe(0.65);
-    expect(detail.S5.z).toBe('0.0%');
+    expect(detail.Y5.v).toBe(0.65);
+    expect(detail.Y5.z).toBe('0.0%');
     expect(detail.A4.s?.fgColor?.rgb).toBe('4F46E5');
-    expect(detail.R5.s?.fgColor?.rgb).toBe('DCFCE7');
+    expect(detail.X5.s?.fgColor?.rgb).toBe('DCFCE7');
     expect(detail.A6.v).toBe('REPORT TOTAL');
-    expect(reopened.Props?.Title).toBe('Monthly Treatment & Profitability Report');
+    expect(reopened.Props?.Title).toBe('Monthly Clinic & Profitability Report');
 
     const uncompressed = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', compression: false, cellStyles: true });
     const openXml = uncompressed.toString('utf8');
@@ -120,16 +125,57 @@ describe('monthly report Excel workbook', () => {
     expect(openXml).toContain('CBD5E1');
   });
 
+  it('exports service, medicine, discount, MLS, and operating expense sections', async () => {
+    const expandedReport: MonthlyReport = {
+      ...report,
+      rows: [{
+        ...report.rows[0], standardCost: 110000, discount: 10000, serviceCharges: 5000,
+        medicineSales: 10000, totalRevenue: 115000, mlsTotal: 15000, netProfit: 80000, netMargin: 80000 / 115000
+      }],
+      summary: {
+        ...report.summary, standardProduction: 110000, discount: 10000, serviceCharges: 5000,
+        medicineSales: 10000, totalRevenue: 115000, mlsTotal: 15000, operatingExpenses: 7000,
+        totalCost: 42000, netProfit: 73000, netMargin: 73000 / 115000
+      },
+      byTreatment: [{
+        ...report.byTreatment[0], discount: 10000, serviceCharges: 5000, medicineSales: 10000,
+        totalRevenue: 115000, mlsTotal: 15000, netProfit: 80000, netMargin: 80000 / 115000
+      }],
+      byDoctor: [{
+        ...report.byDoctor[0], discount: 10000, serviceCharges: 5000, medicineSales: 10000,
+        totalRevenue: 115000, mlsTotal: 15000, netProfit: 80000, netMargin: 80000 / 115000
+      }],
+      byPatientType: [{
+        ...report.byPatientType[0], discount: 10000, serviceCharges: 5000, medicineSales: 10000,
+        totalRevenue: 115000, mlsTotal: 15000, netProfit: 80000, netMargin: 80000 / 115000
+      }],
+      expenses: [{ id: 'expense-1', location_id: 'location-1', date: '2026-07-10', category: 'Rent', description: 'Clinic rent', amount: 7000 }]
+    };
+    const workbook = await buildMonthlyReportExcelWorkbook(expandedReport, metadata);
+
+    expect(workbook.Sheets['Executive Summary'].D9.v).toBe('Service Charges');
+    expect(workbook.Sheets['Executive Summary'].D10.v).toBe('Medicine Sales');
+    expect(workbook.Sheets['Executive Summary'].G9.v).toBe('MLS Total');
+    expect(workbook.Sheets['Executive Summary'].G11.v).toBe('Operating Expenses');
+    expect(workbook.Sheets['Treatment Detail'].O4.v).toBe('Service Charges');
+    expect(workbook.Sheets['Treatment Detail'].P4.v).toBe('Medicine Sales');
+    expect(workbook.Sheets['Treatment Detail'].U4.v).toBe('MLS Total');
+    expect(workbook.Sheets['By Clinician'].J4.v).toBe('MLS Total');
+    expect(workbook.Sheets['Operating Expenses'].D5.v).toBe(7000);
+  });
+
   it('keeps empty reporting periods structured and filterable', async () => {
     const emptyReport: MonthlyReport = {
       rows: [],
       summary: {
-        treatmentCount: 0, patientCount: 0, production: 0, payment: 0, balance: 0, materialCost: 0,
-        labCost: 0, specialDoctorCost: 0, doctorCost: 0, totalCost: 0, netProfit: 0, netMargin: 0, collectionRate: 0
+        treatmentCount: 0, patientCount: 0, standardProduction: 0, discount: 0, production: 0, payment: 0, balance: 0,
+        serviceCharges: 0, medicineSales: 0, totalRevenue: 0, materialCost: 0, labCost: 0, specialDoctorCost: 0,
+        mlsTotal: 0, doctorCost: 0, operatingExpenses: 0, totalCost: 0, netProfit: 0, netMargin: 0, collectionRate: 0
       },
       byTreatment: [],
       byDoctor: [],
-      byPatientType: []
+      byPatientType: [],
+      expenses: []
     };
     const workbook = await buildMonthlyReportExcelWorkbook(emptyReport, metadata);
     const detail = workbook.Sheets['Treatment Detail'];
@@ -138,7 +184,7 @@ describe('monthly report Excel workbook', () => {
     expect(detail.A5.v).toBe('REPORT TOTAL');
     expect(detail.J5.v).toBe(0);
     expect(detail.J5.z).toBe('#,##0" Ks"');
-    expect(detail['!autofilter']).toEqual({ ref: 'A4:S4' });
+    expect(detail['!autofilter']).toEqual({ ref: 'A4:Y4' });
   });
 
   it('uses an explicit loss treatment without changing the underlying numeric value', async () => {
@@ -153,12 +199,12 @@ describe('monthly report Excel workbook', () => {
     const workbook = await buildMonthlyReportExcelWorkbook(lossReport, metadata);
     const detail = workbook.Sheets['Treatment Detail'];
 
-    expect(detail.R5.v).toBe(-5000);
-    expect(detail.R5.s).toMatchObject({
+    expect(detail.X5.v).toBe(-5000);
+    expect(detail.X5.s).toMatchObject({
       fill: { patternType: 'solid', fgColor: { rgb: 'FEE2E2' } },
       font: { color: { rgb: 'B91C1C' } }
     });
-    expect(workbook.Sheets['Executive Summary'].H10.s?.fill?.fgColor?.rgb).toBe('FEE2E2');
+    expect(workbook.Sheets['Executive Summary'].H13.s?.fill?.fgColor?.rgb).toBe('FEE2E2');
   });
 
   it('exports same-patient same-day treatments as one detail row without changing treatment analysis', async () => {
@@ -166,19 +212,20 @@ describe('monthly report Excel workbook', () => {
       ...report,
       rows: [
         report.rows[0],
-        { ...report.rows[0], treatmentId: 'treatment-2', treatment: 'Filling', doctor: 'Doctor Two', cost: 50000, payment: 30000, balance: 20000, materialCost: 5000, labCost: 0, doctorCost: 10000, totalCost: 15000, netProfit: 35000, netMargin: 0.7 },
-        { ...report.rows[0], treatmentId: 'treatment-3', treatment: 'Crown', cost: 25000, payment: 10000, balance: 15000, materialCost: 0, labCost: 5000, doctorCost: 5000, totalCost: 10000, netProfit: 15000, netMargin: 0.6 },
-        { ...report.rows[0], treatmentId: 'treatment-4', treatment: 'Scaling', doctor: 'Doctor Two', cost: 25000, payment: 0, balance: 25000, materialCost: 0, labCost: 0, doctorCost: 5000, totalCost: 5000, netProfit: 20000, netMargin: 0.8 }
+        { ...report.rows[0], treatmentId: 'treatment-2', treatment: 'Filling', doctor: 'Doctor Two', standardCost: 50000, cost: 50000, totalRevenue: 50000, payment: 30000, balance: 20000, materialCost: 5000, labCost: 0, mlsTotal: 5000, doctorCost: 10000, totalCost: 15000, netProfit: 35000, netMargin: 0.7 },
+        { ...report.rows[0], treatmentId: 'treatment-3', treatment: 'Crown', standardCost: 25000, cost: 25000, totalRevenue: 25000, payment: 10000, balance: 15000, materialCost: 0, labCost: 5000, mlsTotal: 5000, doctorCost: 5000, totalCost: 10000, netProfit: 15000, netMargin: 0.6 },
+        { ...report.rows[0], treatmentId: 'treatment-4', treatment: 'Scaling', doctor: 'Doctor Two', standardCost: 25000, cost: 25000, totalRevenue: 25000, payment: 0, balance: 25000, materialCost: 0, labCost: 0, mlsTotal: 0, doctorCost: 5000, totalCost: 5000, netProfit: 20000, netMargin: 0.8 }
       ],
       summary: {
-        treatmentCount: 4, patientCount: 1, production: 200000, payment: 100000, balance: 100000,
-        materialCost: 15000, labCost: 10000, specialDoctorCost: 0, doctorCost: 40000, totalCost: 65000, netProfit: 135000,
+        treatmentCount: 4, patientCount: 1, standardProduction: 200000, discount: 0, production: 200000, payment: 100000, balance: 100000,
+        serviceCharges: 0, medicineSales: 0, totalRevenue: 200000, materialCost: 15000, labCost: 10000, specialDoctorCost: 0,
+        mlsTotal: 25000, doctorCost: 40000, operatingExpenses: 0, totalCost: 65000, netProfit: 135000,
         netMargin: 0.675, collectionRate: 0.5
       },
       byTreatment: [
-        { name: 'Crown', treatments: 2, patients: 1, production: 125000, payment: 70000, totalCost: 45000, netProfit: 80000, netMargin: 0.64 },
-        { name: 'Filling', treatments: 1, patients: 1, production: 50000, payment: 30000, totalCost: 15000, netProfit: 35000, netMargin: 0.7 },
-        { name: 'Scaling', treatments: 1, patients: 1, production: 25000, payment: 0, totalCost: 5000, netProfit: 20000, netMargin: 0.8 }
+        { name: 'Crown', treatments: 2, patients: 1, discount: 0, production: 125000, payment: 70000, serviceCharges: 0, medicineSales: 0, totalRevenue: 125000, mlsTotal: 15000, totalCost: 45000, netProfit: 80000, netMargin: 0.64 },
+        { name: 'Filling', treatments: 1, patients: 1, discount: 0, production: 50000, payment: 30000, serviceCharges: 0, medicineSales: 0, totalRevenue: 50000, mlsTotal: 5000, totalCost: 15000, netProfit: 35000, netMargin: 0.7 },
+        { name: 'Scaling', treatments: 1, patients: 1, discount: 0, production: 25000, payment: 0, serviceCharges: 0, medicineSales: 0, totalRevenue: 25000, mlsTotal: 0, totalCost: 5000, netProfit: 20000, netMargin: 0.8 }
       ]
     };
 
@@ -188,11 +235,11 @@ describe('monthly report Excel workbook', () => {
 
     expect(detail.H5.v).toBe('Crown ×2; Filling; Scaling');
     expect(detail.I5.v).toBe('Doctor One; Doctor Two');
-    expect(detail.J5.v).toBe(200000);
-    expect(detail.R5.v).toBe(135000);
-    expect(detail.S5.v).toBe(0.675);
+    expect(detail.L5.v).toBe(200000);
+    expect(detail.X5.v).toBe(135000);
+    expect(detail.Y5.v).toBe(0.675);
     expect(detail.A6.v).toBe('REPORT TOTAL');
-    expect(detail['!autofilter']).toEqual({ ref: 'A4:S5' });
+    expect(detail['!autofilter']).toEqual({ ref: 'A4:Y5' });
     expect(byTreatment.A5.v).toBe('Crown');
     expect(byTreatment.B5.v).toBe(2);
     expect(byTreatment.A8.v).toBe('REPORT TOTAL');

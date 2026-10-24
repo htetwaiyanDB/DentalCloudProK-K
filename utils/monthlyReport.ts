@@ -1,4 +1,4 @@
-import type { ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
+import type { Appointment, ClinicalRecord, Expense, MedicineSale, PaymentRecord, TreatmentCostSummary } from '../types';
 import type { Currency } from './currency';
 import { allocateCommissionablePayments } from './doctorCommissionLedger';
 import {
@@ -7,12 +7,14 @@ import {
   getPaymentTreatmentShare
 } from './paymentTreatmentAllocation';
 import { chunkUniqueIds, REPORT_URL_BATCH_SIZE } from './reportBatching';
+import { getPaymentServiceFeeAmount } from './serviceFee';
 
 export interface MonthlyReportSourceRecord extends ClinicalRecord {
   patient_age?: number | null;
   patient_phone?: string | null;
   patient_city?: string | null;
   patient_township?: string | null;
+  patient_balance?: number | null;
 }
 
 export interface MonthlyReportData {
@@ -20,6 +22,12 @@ export interface MonthlyReportData {
   allocationRecords?: MonthlyReportSourceRecord[];
   payments: PaymentRecord[];
   costSummaries: Record<string, TreatmentCostSummary>;
+  paymentCostSummaries?: Record<string, TreatmentCostSummary>;
+  dateFrom?: string;
+  dateTo?: string;
+  appointments?: Appointment[];
+  medicineSales?: MedicineSale[];
+  expenses?: Expense[];
 }
 
 export interface MonthlyReportRow {
@@ -34,12 +42,18 @@ export interface MonthlyReportRow {
   patientType: string;
   treatment: string;
   doctor: string;
+  standardCost: number;
+  discount: number;
   cost: number;
   payment: number;
   balance: number;
+  serviceCharges: number;
+  medicineSales: number;
+  totalRevenue: number;
   labCost: number;
   materialCost: number;
   specialDoctorCost: number;
+  mlsTotal: number;
   doctorCost: number;
   totalCost: number;
   netProfit: number;
@@ -54,13 +68,20 @@ export interface MonthlyReportDetailRow extends MonthlyReportRow {
 export interface MonthlyReportSummary {
   treatmentCount: number;
   patientCount: number;
+  standardProduction: number;
+  discount: number;
   production: number;
   payment: number;
   balance: number;
+  serviceCharges: number;
+  medicineSales: number;
+  totalRevenue: number;
   labCost: number;
   materialCost: number;
   specialDoctorCost: number;
+  mlsTotal: number;
   doctorCost: number;
+  operatingExpenses: number;
   totalCost: number;
   netProfit: number;
   netMargin: number;
@@ -71,8 +92,13 @@ export interface MonthlyReportGroup {
   name: string;
   treatments: number;
   patients: number;
+  discount: number;
   production: number;
   payment: number;
+  serviceCharges: number;
+  medicineSales: number;
+  totalRevenue: number;
+  mlsTotal: number;
   totalCost: number;
   netProfit: number;
   netMargin: number;
@@ -84,6 +110,7 @@ export interface MonthlyReport {
   byTreatment: MonthlyReportGroup[];
   byDoctor: MonthlyReportGroup[];
   byPatientType: MonthlyReportGroup[];
+  expenses: Expense[];
 }
 
 export interface MonthlyReportMetadata {
@@ -150,11 +177,17 @@ export const groupMonthlyReportDetailRows = (rows: MonthlyReportRow[]): MonthlyR
     const first = sortedGroup[0];
     const sum = (selector: (row: MonthlyReportRow) => number) => money(sortedGroup.reduce((total, row) => total + selector(row), 0));
     const cost = sum(row => row.cost);
+    const standardCost = sum(row => row.standardCost);
+    const discount = sum(row => row.discount);
     const payment = sum(row => row.payment);
     const balance = sum(row => row.balance);
+    const serviceCharges = sum(row => row.serviceCharges);
+    const medicineSales = sum(row => row.medicineSales);
+    const totalRevenue = sum(row => row.totalRevenue);
     const labCost = sum(row => row.labCost);
     const materialCost = sum(row => row.materialCost);
     const specialDoctorCost = sum(row => row.specialDoctorCost);
+    const mlsTotal = sum(row => row.mlsTotal);
     const doctorCost = sum(row => row.doctorCost);
     const totalCost = sum(row => row.totalCost);
     const netProfit = sum(row => row.netProfit);
@@ -166,16 +199,22 @@ export const groupMonthlyReportDetailRows = (rows: MonthlyReportRow[]): MonthlyR
       treatmentCount: sortedGroup.length,
       treatment: combineLabels(sortedGroup.map(row => row.treatment)),
       doctor: combineDistinctLabels(sortedGroup.map(row => row.doctor)),
+      standardCost,
+      discount,
       cost,
       payment,
       balance,
+      serviceCharges,
+      medicineSales,
+      totalRevenue,
       labCost,
       materialCost,
       specialDoctorCost,
+      mlsTotal,
       doctorCost,
       totalCost,
       netProfit,
-      netMargin: cost > 0 ? netProfit / cost : 0
+      netMargin: totalRevenue > 0 ? netProfit / totalRevenue : 0
     };
   }).sort((a, b) => (
     a.date.localeCompare(b.date)
@@ -186,7 +225,7 @@ export const groupMonthlyReportDetailRows = (rows: MonthlyReportRow[]): MonthlyR
 };
 
 const buildPaymentByTreatment = (records: MonthlyReportSourceRecord[], payments: PaymentRecord[]): Map<string, number> => {
-  const uniquePayments = dedupePaymentRecords(payments);
+  const uniquePayments = dedupePaymentRecords(payments).filter((payment) => !payment.voidedAt);
   const allocations = allocateCommissionablePayments(
     records.map(record => ({
       id: record.id,
@@ -210,24 +249,112 @@ const buildPaymentByTreatment = (records: MonthlyReportSourceRecord[], payments:
   }, new Map<string, number>());
 };
 
-const summarizeRows = (rows: MonthlyReportRow[]): MonthlyReportSummary => {
+type AllocatedTreatmentCosts = Pick<TreatmentCostSummary, 'materialTotal' | 'labTotal' | 'specialDoctorTotal'>;
+
+const allocatePaymentCostsByTreatment = (
+  records: MonthlyReportSourceRecord[],
+  payments: PaymentRecord[],
+  paymentCostSummaries: Record<string, TreatmentCostSummary>
+): Map<string, AllocatedTreatmentCosts> => {
+  const recordById = new Map(records.map((record) => [record.id, record]));
+  const activePayments = dedupePaymentRecords(payments).filter((payment) => !payment.voidedAt);
+  const allocations = allocateCommissionablePayments(
+    records.map((record) => ({
+      id: record.id,
+      patientId: record.patient_id,
+      date: record.date,
+      cost: positiveMoney(record.cost)
+    })),
+    activePayments.map((payment) => ({
+      id: payment.id,
+      patientId: payment.patientId,
+      date: payment.date,
+      createdAt: payment.createdAt,
+      commissionableAmount: getPaymentTreatmentShare(payment),
+      treatmentIds: getPaymentTreatmentIds(payment)
+    }))
+  );
+  const allocatedTreatmentIdsByPayment = new Map<string, string[]>();
+  allocations.forEach((allocation) => {
+    const ids = allocatedTreatmentIdsByPayment.get(allocation.paymentId) || [];
+    if (!ids.includes(allocation.treatmentId)) ids.push(allocation.treatmentId);
+    allocatedTreatmentIdsByPayment.set(allocation.paymentId, ids);
+  });
+
+  const result = new Map<string, AllocatedTreatmentCosts>();
+  activePayments.forEach((payment) => {
+    const summary = paymentCostSummaries[payment.id];
+    if (!summary || positiveMoney(summary.totalAmount) <= 0) return;
+    const allocatedIds = allocatedTreatmentIdsByPayment.get(payment.id) || [];
+    const explicitIds = getPaymentTreatmentIds(payment).filter((id) => recordById.has(id));
+    const treatmentIds = allocatedIds.length > 0 ? allocatedIds : explicitIds;
+    if (treatmentIds.length === 0) return;
+
+    const totalWeight = treatmentIds.reduce(
+      (sum, id) => sum + positiveMoney(recordById.get(id)?.cost),
+      0
+    );
+    let allocatedMaterial = 0;
+    let allocatedLab = 0;
+    let allocatedSpecialDoctor = 0;
+    treatmentIds.forEach((id, index) => {
+      const isLast = index === treatmentIds.length - 1;
+      const weight = totalWeight > 0
+        ? positiveMoney(recordById.get(id)?.cost) / totalWeight
+        : 1 / treatmentIds.length;
+      const materialTotal = isLast
+        ? money(positiveMoney(summary.materialTotal) - allocatedMaterial)
+        : money(positiveMoney(summary.materialTotal) * weight);
+      const labTotal = isLast
+        ? money(positiveMoney(summary.labTotal) - allocatedLab)
+        : money(positiveMoney(summary.labTotal) * weight);
+      const specialDoctorTotal = isLast
+        ? money(positiveMoney(summary.specialDoctorTotal) - allocatedSpecialDoctor)
+        : money(positiveMoney(summary.specialDoctorTotal) * weight);
+      allocatedMaterial = money(allocatedMaterial + materialTotal);
+      allocatedLab = money(allocatedLab + labTotal);
+      allocatedSpecialDoctor = money(allocatedSpecialDoctor + specialDoctorTotal);
+      const current = result.get(id) || { materialTotal: 0, labTotal: 0, specialDoctorTotal: 0 };
+      result.set(id, {
+        materialTotal: money(current.materialTotal + materialTotal),
+        labTotal: money(current.labTotal + labTotal),
+        specialDoctorTotal: money(current.specialDoctorTotal + specialDoctorTotal)
+      });
+    });
+  });
+  return result;
+};
+
+const summarizeRows = (rows: MonthlyReportRow[], operatingExpenses = 0, unassignedServiceCharges = 0, unassignedMedicineSales = 0): MonthlyReportSummary => {
   const total = (selector: (row: MonthlyReportRow) => number) => money(rows.reduce((sum, row) => sum + selector(row), 0));
   const production = total(row => row.cost);
   const payment = total(row => row.payment);
-  const netProfit = total(row => row.netProfit);
+  const serviceCharges = money(total(row => row.serviceCharges) + unassignedServiceCharges);
+  const medicineSales = money(total(row => row.medicineSales) + unassignedMedicineSales);
+  const totalRevenue = money(production + serviceCharges + medicineSales);
+  const directCost = total(row => row.totalCost);
+  const totalCost = money(directCost + operatingExpenses);
+  const netProfit = money(totalRevenue - totalCost);
   return {
     treatmentCount: rows.length,
     patientCount: new Set(rows.map(row => row.patientId).filter(Boolean)).size,
+    standardProduction: total(row => row.standardCost),
+    discount: total(row => row.discount),
     production,
     payment,
     balance: total(row => row.balance),
+    serviceCharges,
+    medicineSales,
+    totalRevenue,
     labCost: total(row => row.labCost),
     materialCost: total(row => row.materialCost),
     specialDoctorCost: total(row => row.specialDoctorCost),
+    mlsTotal: total(row => row.mlsTotal),
     doctorCost: total(row => row.doctorCost),
-    totalCost: total(row => row.totalCost),
+    operatingExpenses: money(operatingExpenses),
+    totalCost,
     netProfit,
-    netMargin: production > 0 ? netProfit / production : 0,
+    netMargin: totalRevenue > 0 ? netProfit / totalRevenue : 0,
     collectionRate: production > 0 ? payment / production : 0
   };
 };
@@ -244,8 +371,13 @@ const groupRows = (rows: MonthlyReportRow[], key: (row: MonthlyReportRow) => str
       name,
       treatments: summary.treatmentCount,
       patients: summary.patientCount,
+      discount: summary.discount,
       production: summary.production,
       payment: summary.payment,
+      serviceCharges: summary.serviceCharges,
+      medicineSales: summary.medicineSales,
+      totalRevenue: summary.totalRevenue,
+      mlsTotal: summary.mlsTotal,
       totalCost: summary.totalCost,
       netProfit: summary.netProfit,
       netMargin: summary.netMargin
@@ -253,18 +385,173 @@ const groupRows = (rows: MonthlyReportRow[], key: (row: MonthlyReportRow) => str
   }).sort((a, b) => b.production - a.production || a.name.localeCompare(b.name));
 };
 
+const appendUnassignedRevenueGroups = (
+  groups: MonthlyReportGroup[],
+  unassignedServiceCharges: number,
+  unassignedServicePatients: number,
+  unassignedMedicineSales: number,
+  unassignedMedicinePatients: number
+): MonthlyReportGroup[] => {
+  const result = [...groups];
+  if (unassignedServiceCharges > 0) {
+    result.push({
+      name: 'Service fee only / No treatment',
+      treatments: 0,
+      patients: unassignedServicePatients,
+      discount: 0,
+      production: 0,
+      payment: 0,
+      serviceCharges: unassignedServiceCharges,
+      medicineSales: 0,
+      totalRevenue: unassignedServiceCharges,
+      mlsTotal: 0,
+      totalCost: 0,
+      netProfit: unassignedServiceCharges,
+      netMargin: 1
+    });
+  }
+  if (unassignedMedicineSales > 0) {
+    result.push({
+      name: 'Medicine sale only / No treatment',
+      treatments: 0,
+      patients: unassignedMedicinePatients,
+      discount: 0,
+      production: 0,
+      payment: 0,
+      serviceCharges: 0,
+      medicineSales: unassignedMedicineSales,
+      totalRevenue: unassignedMedicineSales,
+      mlsTotal: 0,
+      totalCost: 0,
+      netProfit: unassignedMedicineSales,
+      netMargin: 1
+    });
+  }
+  return result;
+};
+
 export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
   const paymentByTreatment = buildPaymentByTreatment(data.allocationRecords || data.records, data.payments);
+  const paymentCostsByTreatment = allocatePaymentCostsByTreatment(
+    data.allocationRecords || data.records,
+    data.payments,
+    data.paymentCostSummaries || {}
+  );
+  const recordById = new Map(data.records.map(record => [record.id, record]));
+  const firstTreatmentByVisit = new Map<string, string>();
+  data.records.forEach((record) => {
+    const visitKey = `${record.patient_id}|${record.date}`;
+    if (!firstTreatmentByVisit.has(visitKey)) firstTreatmentByVisit.set(visitKey, record.id);
+  });
+  const serviceChargesByTreatment = new Map<string, number>();
+  const paymentFeeVisits = new Set<string>();
+  const unassignedServiceChargesByVisit = new Map<string, number>();
+  const unassignedServicePatientIds = new Set<string>();
+  const reportDateFrom = data.dateFrom || data.records.reduce((earliest, record) => !earliest || record.date < earliest ? record.date : earliest, '');
+  const reportDateTo = data.dateTo || data.records.reduce((latest, record) => !latest || record.date > latest ? record.date : latest, '');
+  const isInReportRange = (date: string) => (
+    (!reportDateFrom || date >= reportDateFrom) && (!reportDateTo || date <= reportDateTo)
+  );
+  dedupePaymentRecords(data.payments).filter((payment) => !payment.voidedAt).forEach((payment) => {
+    const amount = positiveMoney(getPaymentServiceFeeAmount(payment));
+    if (amount <= 0 || !isInReportRange(payment.date || '')) return;
+
+    const linkedTreatmentId = getPaymentTreatmentIds(payment).find((treatmentId) => recordById.has(treatmentId));
+    const visitKey = `${payment.patientId}|${payment.date}`;
+    const treatmentId = linkedTreatmentId || firstTreatmentByVisit.get(visitKey);
+    paymentFeeVisits.add(visitKey);
+    if (!treatmentId) {
+      unassignedServiceChargesByVisit.set(
+        visitKey,
+        Math.max(unassignedServiceChargesByVisit.get(visitKey) || 0, amount)
+      );
+      if (payment.patientId) unassignedServicePatientIds.add(payment.patientId);
+      return;
+    }
+
+    // The receipt snapshot can be repeated on partial or retried payments for
+    // the same visit. A service fee is a per-visit charge, so keep the largest
+    // recorded amount instead of adding duplicate snapshots together.
+    serviceChargesByTreatment.set(
+      treatmentId,
+      Math.max(serviceChargesByTreatment.get(treatmentId) || 0, amount)
+    );
+    const treatment = recordById.get(treatmentId);
+    if (treatment) paymentFeeVisits.add(`${treatment.patient_id}|${treatment.date}`);
+  });
+  (data.appointments || []).forEach((appointment) => {
+    if (appointment.clinical_fee_status !== 'APPLIED') return;
+    const amount = positiveMoney(appointment.clinical_fee_amount);
+    if (amount <= 0) return;
+    const visitKey = `${appointment.patient_id || ''}|${appointment.date || ''}`;
+    if (paymentFeeVisits.has(visitKey)) return;
+    const treatmentId = firstTreatmentByVisit.get(visitKey);
+    if (treatmentId) {
+      serviceChargesByTreatment.set(
+        treatmentId,
+        Math.max(serviceChargesByTreatment.get(treatmentId) || 0, amount)
+      );
+    } else {
+      unassignedServiceChargesByVisit.set(
+        visitKey,
+        Math.max(unassignedServiceChargesByVisit.get(visitKey) || 0, amount)
+      );
+      if (appointment.patient_id) unassignedServicePatientIds.add(appointment.patient_id);
+    }
+  });
+  const unassignedServiceCharges = money(
+    Array.from(unassignedServiceChargesByVisit.values()).reduce((sum, amount) => sum + amount, 0)
+  );
+  const medicineSalesByTreatment = new Map<string, number>();
+  let unassignedMedicineSales = 0;
+  const unassignedMedicinePatientIds = new Set<string>();
+  (data.medicineSales || []).forEach((sale) => {
+    const amount = positiveMoney(sale.total_price);
+    if (amount <= 0) return;
+    const treatmentId = sale.treatment_id && recordById.has(sale.treatment_id)
+      ? sale.treatment_id
+      : firstTreatmentByVisit.get(`${sale.patient_id}|${sale.date}`);
+    if (treatmentId) medicineSalesByTreatment.set(treatmentId, money((medicineSalesByTreatment.get(treatmentId) || 0) + amount));
+    else {
+      unassignedMedicineSales = money(unassignedMedicineSales + amount);
+      if (sale.patient_id) unassignedMedicinePatientIds.add(sale.patient_id);
+    }
+  });
+  const operatingExpenses = (data.expenses || []).reduce((sum, expense) => sum + positiveMoney(expense.amount), 0);
+  const currentBalanceOwnerByPatient = new Map<string, string>();
+  data.records.forEach((record) => {
+    if (!record.patient_id || record.patient_balance === null || record.patient_balance === undefined) return;
+    const currentOwnerId = currentBalanceOwnerByPatient.get(record.patient_id);
+    const currentOwner = currentOwnerId ? recordById.get(currentOwnerId) : undefined;
+    if (!currentOwner || record.date > currentOwner.date || (record.date === currentOwner.date && record.id > currentOwner.id)) {
+      currentBalanceOwnerByPatient.set(record.patient_id, record.id);
+    }
+  });
   const rows = data.records.map((record): MonthlyReportRow => {
     const cost = positiveMoney(record.cost);
+    const explicitDiscount = positiveMoney(record.discountAmount);
+    const standardCost = Math.max(cost, positiveMoney(record.standardCost), money(cost + explicitDiscount));
+    const discount = money(Math.max(explicitDiscount, standardCost - cost));
     const payment = Math.min(cost, positiveMoney(paymentByTreatment.get(record.id)));
+    const allocatedTreatmentBalance = money(Math.max(0, cost - payment));
+    const hasAuthoritativePatientBalance = record.patient_balance !== null && record.patient_balance !== undefined;
+    const balance = hasAuthoritativePatientBalance
+      ? currentBalanceOwnerByPatient.get(record.patient_id) === record.id
+        ? positiveMoney(record.patient_balance)
+        : 0
+      : allocatedTreatmentBalance;
+    const serviceCharges = positiveMoney(serviceChargesByTreatment.get(record.id));
+    const medicineSales = positiveMoney(medicineSalesByTreatment.get(record.id));
+    const totalRevenue = money(cost + serviceCharges + medicineSales);
     const costs = data.costSummaries[record.id];
-    const labCost = positiveMoney(costs?.labTotal);
-    const materialCost = positiveMoney(costs?.materialTotal);
-    const specialDoctorCost = positiveMoney(costs?.specialDoctorTotal);
+    const paymentCosts = paymentCostsByTreatment.get(record.id);
+    const labCost = money(positiveMoney(costs?.labTotal) + positiveMoney(paymentCosts?.labTotal));
+    const materialCost = money(positiveMoney(costs?.materialTotal) + positiveMoney(paymentCosts?.materialTotal));
+    const specialDoctorCost = money(positiveMoney(costs?.specialDoctorTotal) + positiveMoney(paymentCosts?.specialDoctorTotal));
+    const mlsTotal = money(materialCost + labCost + specialDoctorCost);
     const doctorCost = positiveMoney(record.doctorEarnings);
-    const totalCost = money(labCost + materialCost + specialDoctorCost + doctorCost);
-    const netProfit = money(cost - totalCost);
+    const totalCost = money(mlsTotal + doctorCost);
+    const netProfit = money(totalRevenue - totalCost);
     return {
       treatmentId: record.id,
       date: record.date,
@@ -279,25 +566,50 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
       patientType: record.patient_type?.trim() || 'Not assigned',
       treatment: record.description?.trim() || 'Treatment',
       doctor: record.doctor_name?.trim() || 'Unassigned',
+      standardCost,
+      discount,
       cost,
       payment,
-      balance: money(Math.max(0, cost - payment)),
+      balance,
+      serviceCharges,
+      medicineSales,
+      totalRevenue,
       labCost,
       materialCost,
       specialDoctorCost,
+      mlsTotal,
       doctorCost,
       totalCost,
       netProfit,
-      netMargin: cost > 0 ? netProfit / cost : 0
+      netMargin: totalRevenue > 0 ? netProfit / totalRevenue : 0
     };
   }).sort((a, b) => a.date.localeCompare(b.date) || a.patientName.localeCompare(b.patientName) || a.treatmentId.localeCompare(b.treatmentId));
 
   return {
     rows,
-    summary: summarizeRows(rows),
-    byTreatment: groupRows(rows, row => row.treatment),
-    byDoctor: groupRows(rows, row => row.doctor),
-    byPatientType: groupRows(rows, row => row.patientType)
+    summary: summarizeRows(rows, operatingExpenses, unassignedServiceCharges, unassignedMedicineSales),
+    byTreatment: appendUnassignedRevenueGroups(
+      groupRows(rows, row => row.treatment),
+      unassignedServiceCharges,
+      unassignedServicePatientIds.size,
+      unassignedMedicineSales,
+      unassignedMedicinePatientIds.size
+    ),
+    byDoctor: appendUnassignedRevenueGroups(
+      groupRows(rows, row => row.doctor),
+      unassignedServiceCharges,
+      unassignedServicePatientIds.size,
+      unassignedMedicineSales,
+      unassignedMedicinePatientIds.size
+    ),
+    byPatientType: appendUnassignedRevenueGroups(
+      groupRows(rows, row => row.patientType),
+      unassignedServiceCharges,
+      unassignedServicePatientIds.size,
+      unassignedMedicineSales,
+      unassignedMedicinePatientIds.size
+    ),
+    expenses: data.expenses || []
   };
 };
 

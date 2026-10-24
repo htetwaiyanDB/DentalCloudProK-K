@@ -15,7 +15,7 @@ const addPdfFooter = (doc: jsPDF, metadata: MonthlyReportMetadata) => {
     drawingDoc.line(14, doc.internal.pageSize.height - 13, doc.internal.pageSize.width - 14, doc.internal.pageSize.height - 13);
     doc.setFontSize(7);
     doc.setTextColor(100, 116, 139);
-    doc.text(`${metadata.locationName} | ${metadata.dateFrom} to ${metadata.dateTo} | Production-based profitability`, 14, doc.internal.pageSize.height - 8);
+    doc.text(`${metadata.locationName} | ${metadata.dateFrom} to ${metadata.dateTo} | Comprehensive clinic profitability`, 14, doc.internal.pageSize.height - 8);
     doc.text(`Page ${page} of ${pageCount}`, doc.internal.pageSize.width - 14, doc.internal.pageSize.height - 8, { align: 'right' });
   }
 };
@@ -26,10 +26,12 @@ const addPdfGroupTable = (doc: jsPDF, title: string, groups: MonthlyReportGroup[
   doc.text(title, 14, startY);
   autoTable(doc, {
     startY: startY + 4,
-    head: [['Category', 'Treatments', 'Patients', 'Production', 'Payment', 'Total Cost', 'Net Profit', 'Margin']],
+    head: [['Category', 'Treatments', 'Patients', 'Discount', 'Production', 'Payment', 'Service', 'Medicine', 'Revenue', 'MLS', 'Direct Cost', 'Contribution', 'Margin']],
     body: groups.slice(0, 15).map(group => [
-      group.name, String(group.treatments), String(group.patients), formatCurrency(group.production, metadata.currency),
-      formatCurrency(group.payment, metadata.currency), formatCurrency(group.totalCost, metadata.currency),
+      group.name, String(group.treatments), String(group.patients), formatCurrency(group.discount, metadata.currency),
+      formatCurrency(group.production, metadata.currency), formatCurrency(group.payment, metadata.currency),
+      formatCurrency(group.serviceCharges, metadata.currency), formatCurrency(group.medicineSales, metadata.currency),
+      formatCurrency(group.totalRevenue, metadata.currency), formatCurrency(group.mlsTotal, metadata.currency), formatCurrency(group.totalCost, metadata.currency),
       formatCurrency(group.netProfit, metadata.currency), percentage(group.netMargin)
     ]),
     theme: 'striped',
@@ -51,7 +53,7 @@ export const exportMonthlyReportToPDF = (report: MonthlyReport, metadata: Monthl
   drawingDoc.rect(0, 0, width, 38, 'F');
   doc.setFontSize(21);
   doc.setTextColor(255, 255, 255);
-  doc.text('Monthly Treatment & Profitability Report', 14, 17);
+  doc.text('Monthly Clinic & Profitability Report', 14, 17);
   doc.setFontSize(9);
   doc.setTextColor(203, 213, 225);
   doc.text(`${metadata.locationName}  |  ${metadata.dateFrom} to ${metadata.dateTo}  |  ${metadata.currency}`, 14, 27);
@@ -60,36 +62,49 @@ export const exportMonthlyReportToPDF = (report: MonthlyReport, metadata: Monthl
   const cards = [
     ['Treatments', String(report.summary.treatmentCount)],
     ['Patients', String(report.summary.patientCount)],
-    ['Production', formatCurrency(report.summary.production, metadata.currency)],
+    ['Treatment Production', formatCurrency(report.summary.production, metadata.currency)],
+    ['Discounts', formatCurrency(report.summary.discount, metadata.currency)],
+    ['Service Charges', formatCurrency(report.summary.serviceCharges, metadata.currency)],
+    ['Medicine Sales', formatCurrency(report.summary.medicineSales, metadata.currency)],
+    ['Total Revenue', formatCurrency(report.summary.totalRevenue, metadata.currency)],
     ['Payments', formatCurrency(report.summary.payment, metadata.currency)],
-    ['Total Cost', formatCurrency(report.summary.totalCost, metadata.currency)],
+    ['Outstanding Patient Balance (Current)', formatCurrency(report.summary.balance, metadata.currency)],
+    ['MLS Total', formatCurrency(report.summary.mlsTotal, metadata.currency)],
+    ['Operating Expenses', formatCurrency(report.summary.operatingExpenses, metadata.currency)],
     ['Net Profit', formatCurrency(report.summary.netProfit, metadata.currency)],
-    ['Net Margin', percentage(report.summary.netMargin)],
-    ['Collection Rate', percentage(report.summary.collectionRate)]
+    ['Net Margin', percentage(report.summary.netMargin)]
   ];
-  const cardWidth = (width - 28 - 7 * 3) / 8;
+  const cardsPerRow = 6;
+  const cardWidth = (width - 28 - (cardsPerRow - 1) * 3) / cardsPerRow;
   cards.forEach(([label, value], index) => {
-    const x = 14 + index * (cardWidth + 3);
-    drawingDoc.setFillColor(index === 5 ? 236 : 248, index === 5 ? 253 : 250, index === 5 ? 245 : 252);
-    drawingDoc.setDrawColor(index === 5 ? 167 : 226, index === 5 ? 243 : 232, index === 5 ? 208 : 240);
-    drawingDoc.roundedRect(x, 44, cardWidth, 20, 2, 2, 'FD');
+    const column = index % cardsPerRow;
+    const row = Math.floor(index / cardsPerRow);
+    const x = 14 + column * (cardWidth + 3);
+    const y = 44 + row * 23;
+    const isProfit = label === 'Net Profit';
+    drawingDoc.setFillColor(isProfit ? 236 : 248, isProfit ? 253 : 250, isProfit ? 245 : 252);
+    drawingDoc.setDrawColor(isProfit ? 167 : 226, isProfit ? 243 : 232, isProfit ? 208 : 240);
+    drawingDoc.roundedRect(x, y, cardWidth, 20, 2, 2, 'FD');
     doc.setFontSize(6.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(label.toUpperCase(), x + 3, 50);
+    doc.text(label.toUpperCase(), x + 3, y + 6);
     doc.setFontSize(9);
     doc.setTextColor(15, 23, 42);
-    drawingDoc.text(value, x + 3, 59, { maxWidth: cardWidth - 6 });
+    drawingDoc.text(value, x + 3, y + 15, { maxWidth: cardWidth - 6 });
   });
 
   autoTable(doc, {
-    startY: 71,
-    head: [['Date', 'Pt Name', 'Age', 'Phone', 'City', 'Township', 'Pt Type', 'Treatment', 'Dentist / Doctor', 'Total Cost', 'Payment', 'Receivable Balance', 'Lab Cost', 'Material Cost', 'Special Doctor Cost', 'Doctor RF', 'Total Cost', 'Net Profit']],
+    startY: 94,
+    head: [['Date', 'Pt Name', 'Age', 'Phone', 'City', 'Township', 'Pt Type', 'Treatment', 'Dentist / Doctor', 'Standard', 'Discount', 'Treatment Production', 'Payment', 'Current Patient Balance', 'Service', 'Medicine', 'Revenue', 'Material', 'Lab', 'Special Doctor', 'MLS Total', 'Doctor RF', 'Direct Cost', 'Contribution', 'Margin']],
     body: detailRows.length ? detailRows.map(row => [
       row.date, row.patientName, row.age === null ? '-' : String(row.age), row.phone, row.city, row.township, row.patientType,
-      row.treatment, row.doctor, formatCurrency(row.cost, metadata.currency), formatCurrency(row.payment, metadata.currency),
-      formatCurrency(row.balance, metadata.currency), formatCurrency(row.labCost, metadata.currency), formatCurrency(row.materialCost, metadata.currency),
-      formatCurrency(row.specialDoctorCost, metadata.currency), formatCurrency(row.doctorCost, metadata.currency), formatCurrency(row.totalCost, metadata.currency), formatCurrency(row.netProfit, metadata.currency)
-    ]) : [['No treatments were recorded in this period.', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']],
+      row.treatment, row.doctor, formatCurrency(row.standardCost, metadata.currency), formatCurrency(row.discount, metadata.currency),
+      formatCurrency(row.cost, metadata.currency), formatCurrency(row.payment, metadata.currency), formatCurrency(row.balance, metadata.currency),
+      formatCurrency(row.serviceCharges, metadata.currency), formatCurrency(row.medicineSales, metadata.currency), formatCurrency(row.totalRevenue, metadata.currency),
+      formatCurrency(row.materialCost, metadata.currency), formatCurrency(row.labCost, metadata.currency), formatCurrency(row.specialDoctorCost, metadata.currency),
+      formatCurrency(row.mlsTotal, metadata.currency), formatCurrency(row.doctorCost, metadata.currency), formatCurrency(row.totalCost, metadata.currency),
+      formatCurrency(row.netProfit, metadata.currency), percentage(row.netMargin)
+    ]) : [['No treatments were recorded in this period.', ...Array(24).fill('')]],
     theme: 'grid',
     headStyles: { fillColor: [79, 70, 229], textColor: 255, fontSize: 6, fontStyle: 'bold', halign: 'center', valign: 'middle' },
     bodyStyles: { fontSize: 5.8, textColor: [30, 41, 59], cellPadding: 1.5, valign: 'middle' },
@@ -98,10 +113,12 @@ export const exportMonthlyReportToPDF = (report: MonthlyReport, metadata: Monthl
       0: { cellWidth: 18 }, 1: { cellWidth: 25 }, 2: { cellWidth: 9, halign: 'center' }, 3: { cellWidth: 20 },
       4: { cellWidth: 16 }, 5: { cellWidth: 18 }, 6: { cellWidth: 17 }, 7: { cellWidth: 29 }, 8: { cellWidth: 23 },
       9: { halign: 'right' }, 10: { halign: 'right' }, 11: { halign: 'right' }, 12: { halign: 'right' },
-      13: { halign: 'right' }, 14: { halign: 'right' }, 15: { halign: 'right' }, 16: { halign: 'right' }, 17: { halign: 'right' }
+      13: { halign: 'right' }, 14: { halign: 'right' }, 15: { halign: 'right' }, 16: { halign: 'right' },
+      17: { halign: 'right' }, 18: { halign: 'right' }, 19: { halign: 'right' }, 20: { halign: 'right' },
+      21: { halign: 'right' }, 22: { halign: 'right' }, 23: { halign: 'right' }, 24: { halign: 'right' }
     },
     didParseCell: hook => {
-      if (hook.section === 'body' && hook.column.index === 17 && detailRows[hook.row.index]?.netProfit < 0) {
+      if (hook.section === 'body' && hook.column.index === 23 && detailRows[hook.row.index]?.netProfit < 0) {
         hook.cell.styles.textColor = [190, 24, 93];
         hook.cell.styles.fontStyle = 'bold';
       }
@@ -122,6 +139,23 @@ export const exportMonthlyReportToPDF = (report: MonthlyReport, metadata: Monthl
   const secondEnd = Number((doc as any).lastAutoTable?.finalY || 145);
   if (secondEnd > doc.internal.pageSize.height - 65) doc.addPage();
   addPdfGroupTable(doc, 'Patient Type Performance', report.byPatientType, secondEnd > doc.internal.pageSize.height - 65 ? 20 : secondEnd + 10, metadata);
+
+  if ((report.expenses || []).length > 0) {
+    doc.addPage();
+    doc.setFontSize(18);
+    doc.setTextColor(15, 23, 42);
+    doc.text('Operating Expenses', 14, 20);
+    autoTable(doc, {
+      startY: 28,
+      head: [['Date', 'Category', 'Description', 'Amount']],
+      body: (report.expenses || []).map(expense => [expense.date, expense.category, expense.description, formatCurrency(expense.amount, metadata.currency)]),
+      foot: [['', '', 'TOTAL', formatCurrency(report.summary.operatingExpenses, metadata.currency)]],
+      theme: 'grid',
+      headStyles: { fillColor: [79, 70, 229], textColor: 255 },
+      columnStyles: { 3: { halign: 'right', fontStyle: 'bold' } },
+      margin: { left: 14, right: 14, bottom: 18 }
+    });
+  }
 
   addPdfFooter(doc, metadata);
   doc.save(monthlyReportFilename(metadata, 'pdf'));
@@ -276,8 +310,10 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   const workbook = XLSX.utils.book_new();
   const generatedAt = metadata.generatedAt || new Date();
   const currency = currencyFormat(metadata.currency);
+  const directCostTotal = report.summary.mlsTotal + report.summary.doctorCost;
+  const contributionTotal = report.summary.totalRevenue - directCostTotal;
   workbook.Props = {
-    Title: 'Monthly Treatment & Profitability Report',
+    Title: 'Monthly Clinic & Profitability Report',
     Subject: `${metadata.locationName} | ${metadata.dateFrom} to ${metadata.dateTo}`,
     Author: 'Dental Cloud',
     CreatedDate: generatedAt
@@ -290,15 +326,17 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
     ['', '', '', '', '', '', '', ''],
     ['REPORT VOLUME', '', '', 'REVENUE & COLLECTIONS', '', '', 'COSTS & PROFITABILITY', ''],
     ['Treatments Performed', report.summary.treatmentCount, '', 'Treatment Production', report.summary.production, '', 'Material Cost', report.summary.materialCost],
-    ['Distinct Patients', report.summary.patientCount, '', 'Collected Payment', report.summary.payment, '', 'Lab Cost', report.summary.labCost],
-    ['', '', '', 'Outstanding Balance', report.summary.balance, '', 'Special Doctor Cost', report.summary.specialDoctorCost],
-    ['', '', '', 'Collection Rate', report.summary.collectionRate, '', 'Doctor Cost', report.summary.doctorCost],
-    ['', '', '', '', '', '', 'Total Cost', report.summary.totalCost],
-    ['', '', '', '', '', '', 'Net Profit', report.summary.netProfit],
-    ['', '', '', '', '', '', 'Net Margin', report.summary.netMargin],
+    ['Distinct Patients', report.summary.patientCount, '', 'Standard Production', report.summary.standardProduction, '', 'Lab Cost', report.summary.labCost],
+    ['', '', '', 'Treatment Discount', report.summary.discount, '', 'Special Doctor Cost', report.summary.specialDoctorCost],
+    ['', '', '', 'Service Charges', report.summary.serviceCharges, '', 'MLS Total', report.summary.mlsTotal],
+    ['', '', '', 'Medicine Sales', report.summary.medicineSales, '', 'Doctor Cost', report.summary.doctorCost],
+    ['', '', '', 'Total Revenue', report.summary.totalRevenue, '', 'Operating Expenses', report.summary.operatingExpenses],
+    ['', '', '', 'Collected Treatment Payment', report.summary.payment, '', 'Total Cost', report.summary.totalCost],
+    ['', '', '', 'Outstanding Patient Balance (Current)', report.summary.balance, '', 'Net Profit', report.summary.netProfit],
+    ['', '', '', 'Collection Rate', report.summary.collectionRate, '', 'Net Margin', report.summary.netMargin],
     ['', '', '', '', '', '', '', ''],
     ['REPORT DEFINITION', '', '', '', '', '', '', ''],
-    ['Net Profit = Treatment Production - Material Cost - Lab Cost - Special Doctor Cost - Doctor Cost. Unrelated operating expenses are excluded.', '', '', '', '', '', '', '']
+    ['Net Profit = Treatment Production + Service Charges + Medicine Sales - MLS Total - Doctor Cost - Operating Expenses. Outstanding Patient Balance is the current database balance for each distinct report patient and is counted once per patient. MLS-generated expenses are excluded from Operating Expenses to prevent double counting.', '', '', '', '', '', '', '']
   ];
   const summarySheet: any = XLSX.utils.aoa_to_sheet(summaryRows);
   summarySheet['!cols'] = [24, 16, 4, 24, 18, 4, 24, 18].map(wch => ({ wch }));
@@ -306,13 +344,13 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   summarySheet['!merges'] = [
     XLSX.utils.decode_range('A1:H1'), XLSX.utils.decode_range('A2:H2'), XLSX.utils.decode_range('A3:H3'),
     XLSX.utils.decode_range('A5:B5'), XLSX.utils.decode_range('D5:E5'), XLSX.utils.decode_range('G5:H5'),
-    XLSX.utils.decode_range('A13:H13'), XLSX.utils.decode_range('A14:H14')
+    XLSX.utils.decode_range('A16:H16'), XLSX.utils.decode_range('A17:H17')
   ];
   summarySheet['!freeze'] = { xSplit: 0, ySplit: 4, topLeftCell: 'A5', activePane: 'bottomLeft', state: 'frozen' };
-  ['E6', 'E7', 'E8', 'H6', 'H7', 'H8', 'H9', 'H10'].forEach(address => {
+  ['E6', 'E7', 'E8', 'E9', 'E10', 'E11', 'E12', 'E13', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13'].forEach(address => {
     if (summarySheet[address]?.t === 'n') summarySheet[address].z = currency;
   });
-  ['E9', 'H11'].forEach(address => {
+  ['E14', 'H14'].forEach(address => {
     if (summarySheet[address]?.t === 'n') summarySheet[address].z = '0.0%';
   });
   styleReportBanner(XLSX, summarySheet, 'H');
@@ -327,24 +365,23 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
     alignment: { vertical: 'center', horizontal: 'left' },
     border: excelBorder('medium', EXCEL_COLORS.indigo)
   }));
-  ['A6:B11', 'D6:E11', 'G6:H11'].forEach(range => applyRangeStyle(XLSX, summarySheet, range, {
+  ['A6:B14', 'D6:E14', 'G6:H14'].forEach(range => applyRangeStyle(XLSX, summarySheet, range, {
     fill: fill(EXCEL_COLORS.white),
     font: { name: 'Calibri', sz: 10, color: { rgb: EXCEL_COLORS.slate } },
     alignment: { vertical: 'center', horizontal: 'left' },
     border: excelBorder()
   }));
-  ['B6', 'B7', 'E6', 'E7', 'E8', 'E9', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11'].forEach(address => {
+  ['B6', 'B7', 'E6', 'E7', 'E8', 'E9', 'E10', 'E11', 'E12', 'E13', 'E14', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13', 'H14'].forEach(address => {
     applyCellStyle(summarySheet, address, { alignment: { vertical: 'center', horizontal: 'right' } });
   });
-  styleProfitCell(summarySheet, 'H10', report.summary.netProfit, true);
-  styleProfitCell(summarySheet, 'H11', report.summary.netProfit, true);
-  applyRangeStyle(XLSX, summarySheet, 'A13:H13', {
+  styleProfitCell(summarySheet, 'H13', report.summary.netProfit, true);
+  applyRangeStyle(XLSX, summarySheet, 'A16:H16', {
     fill: fill(EXCEL_COLORS.total),
     font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: EXCEL_COLORS.navy } },
     alignment: { vertical: 'center', horizontal: 'left' },
     border: excelBorder('medium', EXCEL_COLORS.slate)
   });
-  applyRangeStyle(XLSX, summarySheet, 'A14:H14', {
+  applyRangeStyle(XLSX, summarySheet, 'A17:H17', {
     fill: fill(EXCEL_COLORS.stripe),
     font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: EXCEL_COLORS.slate } },
     alignment: { vertical: 'center', horizontal: 'left', wrapText: true },
@@ -354,62 +391,83 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
 
   const detailHeaders = [
     'Treatment Date', 'Patient Name', 'Age', 'Phone Number', 'City', 'Township', 'Patient Type', 'Treatment', 'Clinician',
-    'Total Cost', 'Collected Payment', 'Receivable Balance', 'Material Cost', 'Lab Cost', 'Special Doctor Cost', 'Doctor RF',
-    'Total Cost', 'Net Profit', 'Net Margin'
+    'Standard Production', 'Discount', 'Treatment Production', 'Collected Payment', 'Current Patient Balance', 'Service Charges', 'Medicine Sales',
+    'Total Revenue', 'Material Cost', 'Lab Cost', 'Special Doctor Cost', 'MLS Total', 'Doctor RF', 'Direct Cost', 'Contribution', 'Contribution Margin'
   ];
   const groupedDetailRows = groupMonthlyReportDetailRows(report.rows);
   const detailData = groupedDetailRows.map(row => [
     row.date, row.patientName, row.age ?? '', row.phone, row.city, row.township, row.patientType, row.treatment, row.doctor,
-    row.cost, row.payment, row.balance, row.materialCost, row.labCost, row.specialDoctorCost, row.doctorCost, row.totalCost, row.netProfit, row.netMargin
+    row.standardCost, row.discount, row.cost, row.payment, row.balance, row.serviceCharges, row.medicineSales, row.totalRevenue,
+    row.materialCost, row.labCost, row.specialDoctorCost, row.mlsTotal, row.doctorCost, row.totalCost, row.netProfit, row.netMargin
   ]);
   const detailRows: Array<Array<string | number>> = [
-    ['TREATMENT DETAIL', ...Array(18).fill('')],
-    [reportSubtitle(metadata), ...Array(18).fill('')],
-    ['', ...Array(18).fill('')],
+    ['TREATMENT DETAIL', ...Array(24).fill('')],
+    [reportSubtitle(metadata), ...Array(24).fill('')],
+    ['', ...Array(24).fill('')],
     detailHeaders,
     ...detailData,
-    ['REPORT TOTAL', '', '', '', '', '', '', '', '', report.summary.production, report.summary.payment, report.summary.balance,
-      report.summary.materialCost, report.summary.labCost, report.summary.specialDoctorCost, report.summary.doctorCost, report.summary.totalCost, report.summary.netProfit, report.summary.netMargin]
+    ['REPORT TOTAL', '', '', '', '', '', '', '', '', report.summary.standardProduction, report.summary.discount, report.summary.production,
+      report.summary.payment, report.summary.balance, report.summary.serviceCharges, report.summary.medicineSales, report.summary.totalRevenue,
+      report.summary.materialCost, report.summary.labCost, report.summary.specialDoctorCost, report.summary.mlsTotal, report.summary.doctorCost,
+      directCostTotal, contributionTotal, report.summary.totalRevenue > 0 ? contributionTotal / report.summary.totalRevenue : 0]
   ];
   const detailSheet: any = XLSX.utils.aoa_to_sheet(detailRows);
-  detailSheet['!merges'] = [XLSX.utils.decode_range('A1:S1'), XLSX.utils.decode_range('A2:S2')];
-  configureTableSheet(detailSheet, 4, detailData.length, 'S', [15, 25, 8, 18, 18, 18, 18, 32, 24, 20, 19, 20, 16, 16, 18, 16, 16, 16, 14]);
-  setNumberFormat(XLSX, detailSheet, 5, 5 + detailData.length, [9, 10, 11, 12, 13, 14, 15, 16, 17], currency);
-  setNumberFormat(XLSX, detailSheet, 5, 5 + detailData.length, [18], '0.0%');
-  styleReportBanner(XLSX, detailSheet, 'S');
-  styleTable(XLSX, detailSheet, 4, detailData.length, 5 + detailData.length, 'S', [2, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18], [2]);
-  groupedDetailRows.forEach((row, index) => styleProfitCell(detailSheet, `R${5 + index}`, row.netProfit));
-  styleProfitCell(detailSheet, `R${5 + detailData.length}`, report.summary.netProfit, true);
+  detailSheet['!merges'] = [XLSX.utils.decode_range('A1:Y1'), XLSX.utils.decode_range('A2:Y2')];
+  configureTableSheet(detailSheet, 4, detailData.length, 'Y', [15, 25, 8, 18, 18, 18, 18, 32, 24, 18, 16, 20, 19, 20, 17, 17, 18, 16, 16, 18, 16, 16, 16, 16, 14]);
+  setNumberFormat(XLSX, detailSheet, 5, 5 + detailData.length, [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23], currency);
+  setNumberFormat(XLSX, detailSheet, 5, 5 + detailData.length, [24], '0.0%');
+  styleReportBanner(XLSX, detailSheet, 'Y');
+  styleTable(XLSX, detailSheet, 4, detailData.length, 5 + detailData.length, 'Y', [2, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24], [2]);
+  groupedDetailRows.forEach((row, index) => styleProfitCell(detailSheet, `X${5 + index}`, row.netProfit));
+  styleProfitCell(detailSheet, `X${5 + detailData.length}`, contributionTotal, true);
   XLSX.utils.book_append_sheet(workbook, detailSheet, 'Treatment Detail');
 
   const appendGroupSheet = (name: string, title: string, categoryHeader: string, groups: MonthlyReportGroup[]) => {
     const groupData = groups.map(group => [
-      group.name, group.treatments, group.patients, group.production, group.payment, group.totalCost, group.netProfit, group.netMargin
+      group.name, group.treatments, group.patients, group.discount, group.production, group.payment, group.serviceCharges,
+      group.medicineSales, group.totalRevenue, group.mlsTotal, group.totalCost, group.netProfit, group.netMargin
     ]);
     const rows: Array<Array<string | number>> = [
-      [title, '', '', '', '', '', '', ''],
-      [reportSubtitle(metadata), '', '', '', '', '', '', ''],
-      ['', '', '', '', '', '', '', ''],
-      [categoryHeader, 'Treatments', 'Distinct Patients', 'Total Cost', 'Collected Payment', 'Total Cost', 'Net Profit', 'Net Margin'],
+      [title, ...Array(12).fill('')],
+      [reportSubtitle(metadata), ...Array(12).fill('')],
+      ['', ...Array(12).fill('')],
+      [categoryHeader, 'Treatments', 'Distinct Patients', 'Discount', 'Treatment Production', 'Collected Payment', 'Service Charges', 'Medicine Sales', 'Total Revenue', 'MLS Total', 'Direct Cost', 'Contribution', 'Contribution Margin'],
       ...groupData,
-      ['REPORT TOTAL', report.summary.treatmentCount, report.summary.patientCount, report.summary.production, report.summary.payment,
-        report.summary.totalCost, report.summary.netProfit, report.summary.netMargin]
+      ['REPORT TOTAL', report.summary.treatmentCount, report.summary.patientCount, report.summary.discount, report.summary.production,
+        report.summary.payment, report.summary.serviceCharges, report.summary.medicineSales, report.summary.totalRevenue,
+        report.summary.mlsTotal, directCostTotal, contributionTotal,
+        report.summary.totalRevenue > 0 ? contributionTotal / report.summary.totalRevenue : 0]
     ];
     const sheet: any = XLSX.utils.aoa_to_sheet(rows);
-    sheet['!merges'] = [XLSX.utils.decode_range('A1:H1'), XLSX.utils.decode_range('A2:H2')];
-    configureTableSheet(sheet, 4, groupData.length, 'H', [34, 13, 18, 21, 19, 16, 16, 14]);
-    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [3, 4, 5, 6], currency);
-    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [7], '0.0%');
-    styleReportBanner(XLSX, sheet, 'H');
-    styleTable(XLSX, sheet, 4, groupData.length, 5 + groupData.length, 'H', [1, 2, 3, 4, 5, 6, 7], [1, 2]);
-    groups.forEach((group, index) => styleProfitCell(sheet, `G${5 + index}`, group.netProfit));
-    styleProfitCell(sheet, `G${5 + groupData.length}`, report.summary.netProfit, true);
+    sheet['!merges'] = [XLSX.utils.decode_range('A1:M1'), XLSX.utils.decode_range('A2:M2')];
+    configureTableSheet(sheet, 4, groupData.length, 'M', [34, 13, 18, 16, 21, 19, 17, 17, 18, 16, 16, 16, 14]);
+    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [3, 4, 5, 6, 7, 8, 9, 10, 11], currency);
+    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [12], '0.0%');
+    styleReportBanner(XLSX, sheet, 'M');
+    styleTable(XLSX, sheet, 4, groupData.length, 5 + groupData.length, 'M', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [1, 2]);
+    groups.forEach((group, index) => styleProfitCell(sheet, `L${5 + index}`, group.netProfit));
+    styleProfitCell(sheet, `L${5 + groupData.length}`, contributionTotal, true);
     XLSX.utils.book_append_sheet(workbook, sheet, name);
   };
 
   appendGroupSheet('By Treatment', 'TREATMENT PERFORMANCE', 'Treatment Category', report.byTreatment);
   appendGroupSheet('By Clinician', 'CLINICIAN PERFORMANCE', 'Clinician', report.byDoctor);
   appendGroupSheet('By Patient Type', 'PATIENT TYPE PERFORMANCE', 'Patient Type', report.byPatientType);
+  const expenseRows = (report.expenses || []).map(expense => [expense.date, expense.category, expense.description, expense.amount]);
+  const expenseSheet: any = XLSX.utils.aoa_to_sheet([
+    ['OPERATING EXPENSES', '', '', ''],
+    [reportSubtitle(metadata), '', '', ''],
+    ['', '', '', ''],
+    ['Date', 'Category', 'Description', 'Amount'],
+    ...expenseRows,
+    ['REPORT TOTAL', '', '', report.summary.operatingExpenses]
+  ]);
+  expenseSheet['!merges'] = [XLSX.utils.decode_range('A1:D1'), XLSX.utils.decode_range('A2:D2')];
+  configureTableSheet(expenseSheet, 4, expenseRows.length, 'D', [15, 24, 50, 18]);
+  setNumberFormat(XLSX, expenseSheet, 5, 5 + expenseRows.length, [3], currency);
+  styleReportBanner(XLSX, expenseSheet, 'D');
+  styleTable(XLSX, expenseSheet, 4, expenseRows.length, 5 + expenseRows.length, 'D', [3]);
+  XLSX.utils.book_append_sheet(workbook, expenseSheet, 'Operating Expenses');
   return workbook;
 };
 

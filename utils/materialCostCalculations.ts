@@ -17,7 +17,7 @@ export const calculateCollectedByTreatmentId = (
   records: ClinicalRecord[],
   payments: PaymentRecord[]
 ): Record<string, number> => {
-  const uniquePayments = dedupePaymentRecords(payments);
+  const uniquePayments = dedupePaymentRecords(payments).filter((payment) => !payment.voidedAt);
   const allocations = allocateCommissionablePayments(
     records.map((record) => ({
       id: record.id,

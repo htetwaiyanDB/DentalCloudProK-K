@@ -1,6 +1,8 @@
 import { ClinicalRecord, Expense, Medicine, MedicineSale, PaymentRecord } from '../types';
 import { Currency, formatCurrency } from './currency';
 import { multiplyMoney, sumMoney } from './money';
+import { dedupePaymentRecords } from './paymentTreatmentAllocation';
+import { getTotalPaymentServiceFees } from './serviceFee';
 
 export interface FinancialReport {
   today: string;
@@ -217,22 +219,23 @@ export const buildFinancialReport = (
     currency
   );
 
-  const paymentDaily = sumMoney(
-    paymentRecords.filter(payment => payment.date === today).map(payment => payment.amount),
-    currency
-  );
-  const paymentWeekly = sumMoney(
-    paymentRecords.filter(payment => isWithinDateRange(payment.date, weeklyStart, today)).map(payment => payment.amount),
-    currency
-  );
-  const paymentMonthly = sumMoney(
-    paymentRecords.filter(payment => isSameMonth(payment.date, now)).map(payment => payment.amount),
-    currency
-  );
+  const activePayments = dedupePaymentRecords(paymentRecords).filter(payment => !payment.voidedAt);
+  const serviceFeeDaily = sumMoney([getTotalPaymentServiceFees(
+    activePayments.filter(payment => payment.date === today)
+  )], currency);
+  const serviceFeeWeekly = sumMoney([getTotalPaymentServiceFees(
+    activePayments.filter(payment => isWithinDateRange(payment.date, weeklyStart, today))
+  )], currency);
+  const serviceFeeMonthly = sumMoney([getTotalPaymentServiceFees(
+    activePayments.filter(payment => isSameMonth(payment.date, now))
+  )], currency);
 
-  const revenueDaily = sumMoney([treatmentDaily, medicineDaily, paymentDaily], currency);
-  const revenueWeekly = sumMoney([treatmentWeekly, medicineWeekly, paymentWeekly], currency);
-  const revenueMonthly = sumMoney([treatmentMonthly, medicineMonthly, paymentMonthly], currency);
+  // Treatment and medicine values are already revenue. Adding the full payment
+  // amount would count the same sale twice. Payments contribute only their
+  // separately recorded service-fee portion here.
+  const revenueDaily = sumMoney([treatmentDaily, medicineDaily, serviceFeeDaily], currency);
+  const revenueWeekly = sumMoney([treatmentWeekly, medicineWeekly, serviceFeeWeekly], currency);
+  const revenueMonthly = sumMoney([treatmentMonthly, medicineMonthly, serviceFeeMonthly], currency);
 
   const expenseDaily = sumMoney(
     expenses.filter(exp => exp.date === today).map(exp => exp.amount),

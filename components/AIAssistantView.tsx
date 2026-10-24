@@ -41,6 +41,8 @@ import {
   MemoryClassifierContext
 } from '../utils/assistantMemory';
 import { loadEmailSettingsAsync } from '../utils/emailSettings';
+import { dedupePaymentRecords } from '../utils/paymentTreatmentAllocation';
+import { getTotalPaymentServiceFees } from '../utils/serviceFee';
 
 // Custom CSS for animations
 const customStyles = `
@@ -5158,16 +5160,18 @@ This action requires Agent Mode to be enabled. Please switch to Agent Mode using
                 const periodRecords = activeTreatmentRecords.filter(tr => tr.date >= startDate && tr.date <= endDate);
                 const periodExpenses = activeExpenses.filter(exp => exp.date >= startDate && exp.date <= endDate);
                 const periodMedicineSales = activeMedicineSales.filter(sale => sale.date >= startDate && sale.date <= endDate);
-                const periodPayments = activePaymentRecords.filter(payment => payment.date >= startDate && payment.date <= endDate);
+                const periodPayments = dedupePaymentRecords(activePaymentRecords)
+                  .filter(payment => !payment.voidedAt && payment.date >= startDate && payment.date <= endDate);
                 const treatmentRevenue = periodRecords.reduce((sum, tr) => sum + (tr.cost || 0), 0);
                 const medicineRevenue = periodMedicineSales.reduce((sum, sale) => sum + (sale.total_price || 0), 0);
-                const collectedPayments = periodPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-                const totalRevenue = treatmentRevenue + medicineRevenue + collectedPayments;
+                const serviceFeeRevenue = getTotalPaymentServiceFees(periodPayments);
+                const collectedPayments = periodPayments.reduce((sum, payment) => sum + Number(payment.clearedAmount ?? payment.amount ?? 0), 0);
+                const totalRevenue = treatmentRevenue + medicineRevenue + serviceFeeRevenue;
                 const totalExpenses = periodExpenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
                 const netProfit = totalRevenue - totalExpenses;
                 const treatmentCount = periodRecords.length;
                 
-                currentActionResult = `📊 Financial Report - ${periodLabel} (${startDate} to ${endDate}):\nTotal Revenue: ${totalRevenue} MMK\nTreatment Revenue: ${treatmentRevenue} MMK\nMedicine Sales: ${medicineRevenue} MMK\nCollected Payments: ${collectedPayments} MMK\nTotal Expenses: ${totalExpenses} MMK\nNet Profit: ${netProfit} MMK\nTotal Treatments: ${treatmentCount}`;
+                currentActionResult = `📊 Financial Report - ${periodLabel} (${startDate} to ${endDate}):\nTotal Revenue: ${totalRevenue} MMK\nTreatment Revenue: ${treatmentRevenue} MMK\nMedicine Sales: ${medicineRevenue} MMK\nService Charges: ${serviceFeeRevenue} MMK\nCollected Payments: ${collectedPayments} MMK\nTotal Expenses: ${totalExpenses} MMK\nNet Profit: ${netProfit} MMK\nTotal Treatments: ${treatmentCount}`;
               } catch (err: any) {
                 currentActionResult = `❌ Failed to generate financial report: ${err.message}`;
               }

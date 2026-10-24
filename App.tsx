@@ -82,8 +82,9 @@ import type { SelectedMedicineCharge } from './components/MedicineSelectionModal
 import { formatPaymentAllocations, formatPaymentMethod, getPaymentAllocationTotal, getPaymentHeaderMethod, isSelectablePaymentMethod, normalizePaymentAllocations, normalizePaymentMethod, PAYMENT_METHOD_OPTIONS, validatePaymentAllocations } from './utils/paymentMethods';
 import { buildLegacyPaymentReceiptSnapshot, buildPaymentReceiptSnapshot, getUncapturedMedicineSalesForReceipt, mergeTreatmentRecordsById, normalizePaymentReceiptSnapshot, removePatientTreatmentRecords, removeTreatmentRecordById } from './utils/paymentReceipt';
 import { getSuggestedServiceFeeAmount, hasRecordedServiceFeeForVisit } from './utils/serviceFee';
-import { getPaymentDedupeKey } from './utils/paymentTreatmentAllocation';
-import { validateAuthoritativePaymentTreatments } from './utils/paymentTreatmentValidation';
+import { getPaymentDedupeKey, getPaymentTreatmentIds } from './utils/paymentTreatmentAllocation';
+import { chunkUniqueIds } from './utils/reportBatching';
+import { resolvePaymentTreatmentsForCollection } from './utils/paymentTreatmentValidation';
 import { toLocalDateInputValue } from './utils/patientCreationDate';
 import type { AuditFilter } from './utils/auditLogExport';
 import { filterAppointmentsForDoctor, resolveAppointmentQueryDoctorIds } from './utils/appointmentQueryScope';
@@ -1670,7 +1671,7 @@ const App: React.FC = () => {
     setAuditLoading(true);
     setAuditLoadError(null);
     try {
-      const [records, scopedAppointments, payments, rescheduleLogs] = await Promise.all([
+      const [rangeRecords, scopedAppointments, payments, rescheduleLogs] = await Promise.all([
         includeTreatments
           ? api.treatments.getAllRecords(locationId, {
               limit: null,
@@ -1690,7 +1691,11 @@ const App: React.FC = () => {
             })
           : Promise.resolve([]),
         includePayments
-          ? api.finance.getPayments(locationId, { dateFrom: query.dateFrom, dateTo: query.dateTo })
+          ? api.finance.getPayments(locationId, {
+              dateFrom: query.dateFrom,
+              dateTo: query.dateTo,
+              includeVoidsByVoidedAt: true
+            })
           : Promise.resolve([]),
         includeReschedules
           ? api.appointmentRescheduleLogs.getAll(locationId, {
@@ -1703,9 +1708,25 @@ const App: React.FC = () => {
       if (requestId !== auditRequestRef.current) return;
 
       const scopedPayments = mergeLegacyPaymentRecords(payments, locationId).filter((payment) => {
-        const paymentDate = payment.date || payment.createdAt?.slice(0, 10) || '';
-        return paymentDate >= query.dateFrom && paymentDate <= query.dateTo;
+        const eventDate = payment.voidedAt?.slice(0, 10) || payment.date || payment.createdAt?.slice(0, 10) || '';
+        return eventDate >= query.dateFrom && eventDate <= query.dateTo;
       });
+      const loadedTreatmentIds = new Set(rangeRecords.map((record) => record.id));
+      const missingLinkedTreatmentIds = scopedPayments
+        .flatMap(getPaymentTreatmentIds)
+        .filter((treatmentId) => !loadedTreatmentIds.has(treatmentId));
+      const linkedRecordBatches = includePayments
+        ? await Promise.all(chunkUniqueIds(missingLinkedTreatmentIds).map((ids) => api.treatments.getAllRecords(locationId, {
+            limit: null,
+            ids,
+            includeCommissionEntries: true,
+            throwOnError: true
+          })))
+        : [];
+      if (requestId !== auditRequestRef.current) return;
+      const records = Array.from(new Map(
+        [...rangeRecords, ...linkedRecordBatches.flat()].map((record) => [record.id, record])
+      ).values());
       setAuditRecords(records);
       setAuditAppointments(scopedAppointments);
       setAuditPayments(scopedPayments);
@@ -3747,15 +3768,26 @@ const App: React.FC = () => {
         selectedPaymentTreatments,
         paymentDate
       );
-      const authoritativeTreatmentHistory = selectedPaymentTreatments.length > 0
-        ? await api.treatments.getHistory(selectedPatient.id)
-        : [];
-      const authoritativePaymentTreatments = validateAuthoritativePaymentTreatments(
-        selectedPaymentTreatments,
-        authoritativeTreatmentHistory,
-        selectedPatient.id,
-        selectedPatient.location_id || currentLocationId
+      const paymentLocationId = selectedPatient.location_id || currentLocationId;
+      const [authoritativeTreatmentHistory, authoritativePreviousPayments] = await Promise.all([
+        api.treatments.getHistory(selectedPatient.id),
+        selectedPaymentTreatments.length === 0
+          ? api.finance.getPayments(paymentLocationId, { patientId: selectedPatient.id })
+          : Promise.resolve([])
+      ]);
+      const medicineTotal = matchedMedicineSales.reduce(
+        (sum, sale) => sum + Math.max(0, Number(sale.total_price || 0)),
+        0
       );
+      const authoritativePaymentTreatments = resolvePaymentTreatmentsForCollection({
+        selected: selectedPaymentTreatments,
+        authoritative: authoritativeTreatmentHistory,
+        previousPayments: authoritativePreviousPayments,
+        patientId: selectedPatient.id,
+        locationId: paymentLocationId,
+        paymentDate,
+        treatmentAmount: Math.max(0, paymentAmountTendered - paymentServiceFeeAmount - medicineTotal)
+      });
       const provisionalReceiptSnapshot = buildPaymentReceiptSnapshot({
         patient: selectedPatient,
         amountPaid: paymentAmountTendered,
@@ -4389,9 +4421,10 @@ const App: React.FC = () => {
                     });
                     onProgress({ percent: 45, label: 'Treatment history loaded' });
                     const patientIds = Array.from(new Set(records.map(record => record.patient_id).filter(Boolean)));
-                    const [payments, costSummaries] = await Promise.all([
+                    const [payments, costSummaries, reportAppointments, medicineSales, reportExpenses] = await Promise.all([
                       api.finance.getMonthlyReportPayments({
                         locationId: queryLocationId,
+                        dateFrom,
                         dateTo,
                         patientIds,
                         onProgress: (completed, total) => onProgress({
@@ -4405,11 +4438,35 @@ const App: React.FC = () => {
                           percent: 45 + Math.round((completed / Math.max(total, 1)) * 38),
                           label: `Loading treatment costs ${completed}/${total}…`
                         })
-                      })
+                      }),
+                      api.appointments.getAll(queryLocationId, { dateFrom, dateTo, throwOnError: true }),
+                      api.medicines.getSales(queryLocationId, undefined, { dateFrom, dateTo, throwOnError: true }),
+                      api.expenses.getAll(queryLocationId, { dateFrom, dateTo, throwOnError: true })
                     ]);
-                    onProgress({ percent: 86, label: 'Calculating balances and profit…' });
+                    onProgress({ percent: 86, label: 'Loading payment-linked MLS costs…' });
+                    const paymentCostSummaries = await api.materialCosts.getTotalsByPaymentIds(
+                      payments.map((payment) => payment.id),
+                      { idBatchSize: 50 }
+                    );
+                    onProgress({ percent: 90, label: 'Calculating balances and profit…' });
                     const { buildMonthlyReport } = await import('./utils/monthlyReport');
-                    const report = buildMonthlyReport({ records, allocationRecords, payments, costSummaries });
+                    const operatingExpenses = reportExpenses.filter((expense) => {
+                      const sourceType = expense.source_type || '';
+                      if (['material_cost', 'lab_cost', 'special_doctor_cost'].includes(sourceType)) return false;
+                      return !(expense.is_system_generated && ['Material Cost', 'Lab Cost', 'Special Doctor Cost'].includes(expense.category));
+                    });
+                    const report = buildMonthlyReport({
+                      records,
+                      allocationRecords,
+                      payments,
+                      costSummaries,
+                      paymentCostSummaries,
+                      dateFrom,
+                      dateTo,
+                      appointments: reportAppointments,
+                      medicineSales,
+                      expenses: operatingExpenses
+                    });
                     onProgress({ percent: 92, label: 'Report calculations complete' });
                     return report;
                   }}

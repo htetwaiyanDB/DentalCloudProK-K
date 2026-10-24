@@ -117,14 +117,14 @@ describe('buildFinancialReport', () => {
 
     expect(report.today).toBe('2026-05-31');
     expect(report.monthlyLabel).toBe('May 2026');
-    expect(report.revenueDaily).toBe(300);
-    expect(report.revenueWeekly).toBe(3000);
-    expect(report.revenueMonthly).toBe(4000);
+    expect(report.revenueDaily).toBe(0);
+    expect(report.revenueWeekly).toBe(2700);
+    expect(report.revenueMonthly).toBe(3700);
     expect(report.expenseMonthly).toBe(500);
-    expect(report.profitMonthly).toBe(3500);
+    expect(report.profitMonthly).toBe(3200);
   });
 
-  it('includes treatments, medicine sales, and collected payments in revenue calculations', () => {
+  it('counts treatment production, medicine sales, and service fees without counting collections twice', () => {
     const treatments: ClinicalRecord[] = [
       {
         id: 'tr_today',
@@ -261,13 +261,13 @@ describe('buildFinancialReport', () => {
       payments
     );
 
-    expect(report.revenueDaily).toBe(2500);
-    expect(report.revenueWeekly).toBe(6800);
-    expect(report.revenueMonthly).toBe(6800);
+    expect(report.revenueDaily).toBe(2000);
+    expect(report.revenueWeekly).toBe(5500);
+    expect(report.revenueMonthly).toBe(5500);
     expect(report.expenseDaily).toBe(300);
     expect(report.expenseWeekly).toBe(1000);
     expect(report.expenseMonthly).toBe(1000);
-    expect(report.profitMonthly).toBe(5800);
+    expect(report.profitMonthly).toBe(4500);
     expect(report.inventoryValue).toBe(500);
     expect(report.lowStockCount).toBe(2);
     expect(report.outOfStockCount).toBe(1);
@@ -275,5 +275,40 @@ describe('buildFinancialReport', () => {
       { name: 'Unassigned Doctor', treatments: 2 },
       { name: 'Dr. Mya', treatments: 1 }
     ]);
+  });
+
+  it('includes manual service fees once and excludes voided payment fees', () => {
+    const serviceFeePayment = (id: string, fee: number, voidedAt?: string): PaymentRecord => ({
+      id,
+      location_id: 'loc_1',
+      patientId: 'patient_1',
+      amount: fee,
+      clearedAmount: fee,
+      date: '2026-06-05',
+      type: 'FULL',
+      remainingBalance: 0,
+      voidedAt,
+      receiptSnapshot: {
+        version: 1,
+        receiptType: 'PAYMENT',
+        receiptNumber: id,
+        receiptDate: '2026-06-05',
+        currency: 'MMK',
+        clinic: { appName: 'Clinic', headerTitle: 'Receipt', email: '', phone: '' },
+        patient: { id: 'patient_1', name: 'Patient One' },
+        payment: { amountPaid: fee, method: 'CASH', status: 'FULL', balanceBefore: fee, balanceAfter: 0, serviceFeeAmount: fee },
+        treatments: [],
+        medicines: []
+      }
+    });
+
+    const report = buildFinancialReport([], [], [], 'MMK', '2026-06-05', [], [
+      serviceFeePayment('active-fee', 1_000),
+      serviceFeePayment('repeated-fee-snapshot', 1_000),
+      serviceFeePayment('voided-fee', 2_000, '2026-06-05T12:00:00Z')
+    ]);
+
+    expect(report.revenueDaily).toBe(1_000);
+    expect(report.revenueMonthly).toBe(1_000);
   });
 });

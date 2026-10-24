@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Patient, Appointment, AppointmentRescheduleLog, ClinicalRecord, Doctor, Medicine, MedicineSale, Expense, PaymentRecord } from '../types';
+import { Patient, Appointment, AppointmentRescheduleLog, ClinicalRecord, Doctor, Medicine, MedicineSale, Expense, PaymentRecord, TreatmentCostSummary } from '../types';
 import { formatCurrency, Currency } from './currency';
 import { usesFlatVisitCommission } from './doctorCommission';
 import { formatTeethWithPosition } from './toothNumbering';
@@ -9,6 +9,7 @@ import { formatDoctorName, normalizeDoctorName } from './doctorName';
 import { buildRecallsCancelsExportRows, type RecallsCancelsExportRow } from './recallsCancels';
 import { buildPatientReport } from './patientReport';
 import { buildPatientReportPdfData } from './patientReportExport';
+import { materialCostExportFilename, type MaterialCostExportRow } from './materialCostExport';
 
 export const RECALLS_CANCELS_PDF_TABLE_WIDTH = 252;
 export const RECALLS_CANCELS_PDF_COLUMN_WIDTHS = [16, 12, 23, 18, 17, 17, 21, 22, 30, 36, 20, 20] as const;
@@ -454,17 +455,18 @@ interface ClinicalRecordsExportOptions extends AuditLogFilterOptions {
   payments?: PaymentRecord[];
   rescheduleLogs?: AppointmentRescheduleLog[];
   includeAppointments?: boolean;
+  costSummaries?: Record<string, TreatmentCostSummary>;
 }
 
 export const AUDIT_LOG_PDF_TABLE_WIDTH = 260;
-export const AUDIT_LOG_PDF_COLUMN_WIDTHS = [15, 23, 26, 24, 50, 24, 21, 17, 17, 21, 22] as const;
+export const AUDIT_LOG_PDF_COLUMN_WIDTHS = [14, 22, 24, 22, 50, 21, 19, 16, 16, 18, 18, 20] as const;
 
 export const exportClinicalRecordsToPDF = (records: ClinicalRecord[], currency: Currency, options: ClinicalRecordsExportOptions = {}) => {
   const exportRows = filterAuditLogRowsForExport(
     buildAuditLogRows(records, options.appointments || [], options.includeAppointments ?? false, options.payments || [], options.rescheduleLogs || []),
     options
   );
-  const tableRows = buildAuditLogExportTableRows(exportRows, currency);
+  const tableRows = buildAuditLogExportTableRows(exportRows, currency, options.costSummaries);
   const doc = new jsPDF('l', 'mm', 'a4');
   
   // Header
@@ -488,7 +490,7 @@ export const exportClinicalRecordsToPDF = (records: ClinicalRecord[], currency: 
   // Table
   autoTable(doc, {
     startY: options.dateFrom && options.dateTo ? 52 : 46,
-    head: [['Type', 'Date / Time', 'Patient', 'Clinician', 'Clinical Activity', 'Patient Type', 'Patient Balance', 'Amount', 'Discount', 'Service Charges', 'Doctor Earned']],
+    head: [['Type', 'Date / Time', 'Patient', 'Clinician', 'Clinical Activity', 'Patient Type', 'Patient Balance', 'Amount', 'Discount', 'Service Charges', 'MLS Costs', 'Doctor Earned']],
     body: tableRows.map((row) => [
       row.type,
       row.dateTime,
@@ -500,6 +502,7 @@ export const exportClinicalRecordsToPDF = (records: ClinicalRecord[], currency: 
       row.amount === null ? '-' : formatCurrency(row.amount, currency),
       row.discount === null ? '-' : `-${formatCurrency(row.discount, currency)}`,
       row.serviceCharges === null ? '-' : formatCurrency(row.serviceCharges, currency),
+      row.mlsCosts === null ? '-' : formatCurrency(row.mlsCosts, currency),
       row.doctorEarned === null ? '-' : formatCurrency(row.doctorEarned, currency)
     ]),
     theme: 'grid',
@@ -518,7 +521,8 @@ export const exportClinicalRecordsToPDF = (records: ClinicalRecord[], currency: 
       7: { cellWidth: AUDIT_LOG_PDF_COLUMN_WIDTHS[7], halign: 'right', fontStyle: 'bold' },
       8: { cellWidth: AUDIT_LOG_PDF_COLUMN_WIDTHS[8], halign: 'right', fontStyle: 'bold' },
       9: { cellWidth: AUDIT_LOG_PDF_COLUMN_WIDTHS[9], halign: 'right', fontStyle: 'bold' },
-      10: { cellWidth: AUDIT_LOG_PDF_COLUMN_WIDTHS[10], halign: 'right', fontStyle: 'bold' }
+      10: { cellWidth: AUDIT_LOG_PDF_COLUMN_WIDTHS[10], halign: 'right', fontStyle: 'bold' },
+      11: { cellWidth: AUDIT_LOG_PDF_COLUMN_WIDTHS[11], halign: 'right', fontStyle: 'bold' }
     }
   });
   
@@ -532,6 +536,32 @@ export const exportClinicalRecordsToPDF = (records: ClinicalRecord[], currency: 
   }
   
   doc.save(`${options.includeAppointments ? 'clinic-audit-logs' : 'clinical-records'}-${new Date().toISOString().split('T')[0]}.pdf`);
+};
+
+export const exportMaterialCostsToPDF = (rows: MaterialCostExportRow[], currency: Currency) => {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+  doc.setFontSize(18);
+  doc.text('MLS Cost Report', 14, 18);
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  doc.text(`Generated: ${new Date().toLocaleString()} | Rows: ${rows.length}`, 14, 25);
+  autoTable(doc, {
+    startY: 31,
+    head: [['Date', 'Patient ID', 'Patient', 'Clinician', 'Treatments', 'Production', 'Collected', 'Material', 'Lab', 'Special Doctor', 'MLS Total', 'Doctor Earned', 'Net Profit', 'Balance']],
+    body: rows.map(row => [
+      row.date, row.patientId, row.patientName, row.clinician, row.treatments,
+      formatCurrency(row.treatmentProduction, currency), formatCurrency(row.collectedPayment, currency),
+      formatCurrency(row.materialCost, currency), formatCurrency(row.labCost, currency), formatCurrency(row.specialDoctorCost, currency),
+      formatCurrency(row.mlsTotal, currency), formatCurrency(row.doctorEarned, currency), formatCurrency(row.netProfit, currency),
+      formatCurrency(row.patientBalance, currency)
+    ]),
+    theme: 'grid',
+    headStyles: { fillColor: [79, 70, 229], textColor: 255, fontSize: 7 },
+    bodyStyles: { fontSize: 7 },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [index + 5, { halign: 'right' }]))
+  });
+  doc.save(materialCostExportFilename('pdf'));
 };
 
 export const exportDoctorsToPDF = (doctors: Doctor[]) => {

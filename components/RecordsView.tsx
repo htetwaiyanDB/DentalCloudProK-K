@@ -191,7 +191,7 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, patients = [], appoi
   };
 
   const auditRows = useMemo<AuditExportRow[]>(
-    () => buildAuditLogRows(records, appointments, !isDoctor, payments.filter((payment) => !payment.voidedAt), rescheduleLogs),
+    () => buildAuditLogRows(records, appointments, !isDoctor, payments, rescheduleLogs),
     [records, appointments, payments, rescheduleLogs, isDoctor]
   );
 
@@ -265,22 +265,33 @@ const RecordsView: React.FC<RecordsViewProps> = ({ records, patients = [], appoi
     onQueryChange?.({ dateFrom, dateTo, auditFilter });
   }, [dateFrom, dateTo, auditFilter, onQueryChange]);
 
-  const handleDownloadPDF = () => {
+  const loadExportCostSummaries = async () => {
+    const treatmentIds = filteredRows.flatMap((row) => (
+      row.kind === 'treatment' ? getTreatmentRecordIds(row.record) : []
+    ));
+    return treatmentIds.length > 0 ? api.materialCosts.getTotalsByTreatmentIds(treatmentIds) : {};
+  };
+
+  const handleDownloadPDF = async () => {
+    const costSummaries = await loadExportCostSummaries();
     exportClinicalRecordsToPDF(records, currency, {
       appointments,
       payments,
       rescheduleLogs,
       includeAppointments: !isDoctor,
+      costSummaries,
       ...buildRecordsViewFilterOptions({ isDoctor, auditFilter, dateFrom, dateTo, searchTerm })
     });
   };
 
   const handleDownloadExcel = async () => {
+    const costSummaries = await loadExportCostSummaries();
     await exportClinicalRecordsToExcel(records, currency, {
       appointments,
       payments,
       rescheduleLogs,
       includeAppointments: !isDoctor,
+      costSummaries,
       ...buildRecordsViewFilterOptions({ isDoctor, auditFilter, dateFrom, dateTo, searchTerm })
     });
   };

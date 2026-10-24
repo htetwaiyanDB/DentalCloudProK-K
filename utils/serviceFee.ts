@@ -20,6 +20,19 @@ export const hasRecordedServiceFeeForVisit = (
   && getPaymentServiceFeeAmount(payment) > 0
 ));
 
+/** A service fee is charged once per patient visit, even if a receipt snapshot
+ * is repeated across partial or retried payments. */
+export const getTotalPaymentServiceFees = (payments: PaymentRecord[]): number => {
+  const feeByVisit = new Map<string, number>();
+  payments.forEach((payment) => {
+    const amount = getPaymentServiceFeeAmount(payment);
+    if (amount <= 0) return;
+    const visitKey = `${payment.patientId}|${payment.date}`;
+    feeByVisit.set(visitKey, Math.max(feeByVisit.get(visitKey) || 0, amount));
+  });
+  return Array.from(feeByVisit.values()).reduce((sum, amount) => sum + amount, 0);
+};
+
 /** Returns the automatic suggestion only; staff may still enter a manual fee. */
 export const getSuggestedServiceFeeAmount = ({
   enabled,

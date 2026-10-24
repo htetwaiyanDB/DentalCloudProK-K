@@ -35,6 +35,115 @@ describe('monthly report', () => {
     expect(report.summary).toMatchObject({ treatmentCount: 1, patientCount: 1, production: 100, payment: 60, balance: 40, specialDoctorCost: 15, totalCost: 50, netProfit: 50, collectionRate: 0.6 });
   });
 
+  it('includes discounts, service charges, medicine sales, MLS totals, and operating expenses', () => {
+    const report = buildMonthlyReport({
+      records: [record({ standardCost: 120, discountAmount: 20 })],
+      payments: [payment()],
+      costSummaries: { 'treatment-1': costs({ specialDoctorTotal: 15, specialDoctorItemCount: 1, totalAmount: 30, itemCount: 3 }) },
+      appointments: [{
+        id: 'appointment-1', location_id: 'location-1', patient_id: 'patient-1', date: '2026-07-10', time: '09:00',
+        type: 'Checkup', status: 'Completed', clinical_fee_status: 'APPLIED', clinical_fee_amount: 10
+      }],
+      medicineSales: [{
+        id: 'sale-1', location_id: 'location-1', patient_id: 'patient-1', medicine_id: 'medicine-1', quantity: 1,
+        unit_price: 30, total_price: 30, date: '2026-07-10', treatment_id: 'treatment-1'
+      }],
+      expenses: [{ id: 'expense-1', location_id: 'location-1', description: 'Rent', category: 'Rent', amount: 20, date: '2026-07-10' }]
+    });
+
+    expect(report.rows[0]).toMatchObject({
+      standardCost: 120, discount: 20, serviceCharges: 10, medicineSales: 30, totalRevenue: 140,
+      mlsTotal: 30, totalCost: 50, netProfit: 90
+    });
+    expect(report.summary).toMatchObject({
+      standardProduction: 120, discount: 20, serviceCharges: 10, medicineSales: 30, totalRevenue: 140,
+      mlsTotal: 30, operatingExpenses: 20, totalCost: 70, netProfit: 70, netMargin: 0.5
+    });
+    expect(report.byDoctor[0]).toMatchObject({ mlsTotal: 30, totalRevenue: 140 });
+    expect(report.expenses).toHaveLength(1);
+  });
+
+  it('includes a manual service fee stored in the payment receipt snapshot', () => {
+    const manualFeePayment = payment({
+      receiptSnapshot: {
+        version: 1,
+        receiptType: 'PAYMENT',
+        receiptNumber: 'REC-001',
+        receiptDate: '2026-07-10',
+        currency: 'MMK',
+        createdAt: '2026-07-10T10:00:00.000Z',
+        patient: { id: 'patient-1', patientUniqueId: 'P-001', name: 'Aye Aye', phone: '0912345' },
+        payment: {
+          amountPaid: 70,
+          method: 'CASH',
+          status: 'FULL',
+          balanceBefore: 70,
+          balanceAfter: 0,
+          serviceFeeAmount: 10,
+          serviceFeeCategory: 'RETURNING'
+        },
+        treatments: [],
+        medicines: [],
+        clinic: { appName: 'DentalCloudPro', headerTitle: '', email: '', phone: '' }
+      }
+    });
+    const report = buildMonthlyReport({
+      records: [record()],
+      payments: [manualFeePayment, { ...manualFeePayment, id: 'payment-retry' }],
+      costSummaries: {},
+      appointments: [{
+        id: 'appointment-1', location_id: 'location-1', patient_id: 'patient-1', date: '2026-07-10', time: '09:00',
+        type: 'Checkup', status: 'Completed', clinical_fee_status: 'APPLIED', clinical_fee_amount: 5
+      }]
+    });
+
+    expect(report.rows[0]).toMatchObject({ serviceCharges: 10, totalRevenue: 110 });
+    expect(report.summary.serviceCharges).toBe(10);
+  });
+
+  it('keeps an unlinked manual service fee visible in performance groups', () => {
+    const manualFeePayment = payment({
+      treatmentIds: [],
+      date: '2026-07-11',
+      receiptSnapshot: {
+        version: 1,
+        receiptType: 'PAYMENT',
+        receiptNumber: 'REC-SERVICE-ONLY',
+        receiptDate: '2026-07-11',
+        currency: 'MMK',
+        patient: { id: 'patient-1', name: 'Aye Aye' },
+        payment: {
+          amountPaid: 10,
+          method: 'CASH',
+          status: 'FULL',
+          balanceBefore: 10,
+          balanceAfter: 0,
+          serviceFeeAmount: 10,
+          serviceFeeCategory: 'RETURNING'
+        },
+        treatments: [],
+        medicines: [],
+        clinic: { appName: 'DentalCloudPro', headerTitle: '', email: '', phone: '' }
+      }
+    });
+    const report = buildMonthlyReport({
+      records: [record()],
+      payments: [manualFeePayment],
+      costSummaries: {},
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31'
+    });
+
+    expect(report.summary.serviceCharges).toBe(10);
+    expect(report.byTreatment).toContainEqual(expect.objectContaining({
+      name: 'Service fee only / No treatment',
+      serviceCharges: 10,
+      totalRevenue: 10,
+      netProfit: 10
+    }));
+    expect(report.byTreatment.reduce((sum, group) => sum + group.serviceCharges, 0)).toBe(10);
+  });
+
   it('allocates a shared payment proportionally and never overpays a treatment', () => {
     const report = buildMonthlyReport({
       records: [record(), record({ id: 'treatment-2', cost: 300, description: 'Implant' })],
@@ -43,6 +152,66 @@ describe('monthly report', () => {
     });
     expect(report.rows.map(row => row.payment)).toEqual([50, 150]);
     expect(report.summary.balance).toBe(200);
+  });
+
+  it('excludes voided collections and their service fees', () => {
+    const voidedPayment = payment({
+      amount: 100,
+      clearedAmount: 100,
+      treatmentIds: ['treatment-1'],
+      voidedAt: '2026-07-12T10:00:00Z',
+      receiptSnapshot: {
+        version: 1,
+        receiptType: 'PAYMENT',
+        receiptNumber: 'VOID-1',
+        receiptDate: '2026-07-10',
+        currency: 'MMK',
+        clinic: { appName: 'Clinic', headerTitle: 'Receipt', email: '', phone: '' },
+        patient: { id: 'patient-1', name: 'Aye Aye' },
+        payment: { amountPaid: 100, method: 'CASH', status: 'FULL', balanceBefore: 100, balanceAfter: 0, serviceFeeAmount: 10 },
+        treatments: [],
+        medicines: []
+      }
+    });
+    const report = buildMonthlyReport({ records: [record()], payments: [voidedPayment], costSummaries: {} });
+
+    expect(report.summary.payment).toBe(0);
+    expect(report.summary.serviceCharges).toBe(0);
+  });
+
+  it('uses the authoritative current patient balance once instead of duplicating it per treatment', () => {
+    const report = buildMonthlyReport({
+      records: [
+        record({ patient_balance: 75 }),
+        record({ id: 'treatment-2', date: '2026-07-11', patient_balance: 75 })
+      ],
+      payments: [payment({ amount: 200, clearedAmount: 200, treatmentIds: ['treatment-1', 'treatment-2'] })],
+      costSummaries: {}
+    });
+
+    expect(report.rows.map((row) => row.balance)).toEqual([0, 75]);
+    expect(report.summary.balance).toBe(75);
+  });
+
+  it('loads payment-linked MLS costs and allocates every category across linked treatments', () => {
+    const report = buildMonthlyReport({
+      records: [record(), record({ id: 'treatment-2', cost: 300, description: 'Implant' })],
+      payments: [payment({ amount: 400, clearedAmount: 400, treatmentIds: ['treatment-1', 'treatment-2'] })],
+      costSummaries: {},
+      paymentCostSummaries: {
+        'payment-1': costs({
+          materialTotal: 40,
+          labTotal: 20,
+          specialDoctorTotal: 20,
+          totalAmount: 80,
+          itemCount: 3
+        })
+      }
+    });
+
+    expect(report.rows[0]).toMatchObject({ materialCost: 10, labCost: 5, specialDoctorCost: 5, mlsTotal: 20 });
+    expect(report.rows[1]).toMatchObject({ materialCost: 30, labCost: 15, specialDoctorCost: 15, mlsTotal: 60 });
+    expect(report.summary).toMatchObject({ materialCost: 40, labCost: 20, specialDoctorCost: 20, mlsTotal: 80 });
   });
 
   it('deduplicates repeated payments and supports legacy oldest-balance allocation', () => {

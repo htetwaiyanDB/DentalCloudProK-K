@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { ClinicalRecord } from '../types';
-import { validateAuthoritativePaymentTreatments } from './paymentTreatmentValidation';
+import type { ClinicalRecord, PaymentRecord } from '../types';
+import { resolvePaymentTreatmentsForCollection, validateAuthoritativePaymentTreatments } from './paymentTreatmentValidation';
 
 const treatment = (id: string, overrides: Partial<ClinicalRecord> = {}): ClinicalRecord => ({
   id,
@@ -11,6 +11,44 @@ const treatment = (id: string, overrides: Partial<ClinicalRecord> = {}): Clinica
   cost: 3_000_000,
   date: '2026-08-13',
   ...overrides
+});
+
+describe('resolvePaymentTreatmentsForCollection', () => {
+  it('links a later balance payment to the treatment that still has an outstanding amount', () => {
+    const balanceTreatment = treatment('treatment-300k', { cost: 300_000, date: '2026-10-20' });
+    const firstPayment: PaymentRecord = {
+      id: 'payment-200k',
+      patientId: 'patient-1',
+      amount: 200_000,
+      clearedAmount: 200_000,
+      treatmentIds: ['treatment-300k'],
+      date: '2026-10-20',
+      type: 'PARTIAL',
+      remainingBalance: 100_000
+    };
+
+    expect(resolvePaymentTreatmentsForCollection({
+      selected: [],
+      authoritative: [balanceTreatment],
+      previousPayments: [firstPayment],
+      patientId: 'patient-1',
+      locationId: 'location-1',
+      paymentDate: '2026-10-21',
+      treatmentAmount: 100_000
+    })).toEqual([balanceTreatment]);
+  });
+
+  it('does not link service-fee-only collections to a treatment', () => {
+    expect(resolvePaymentTreatmentsForCollection({
+      selected: [],
+      authoritative: [treatment('service-fee-candidate', { cost: 300_000 })],
+      previousPayments: [],
+      patientId: 'patient-1',
+      locationId: 'location-1',
+      paymentDate: '2026-10-21',
+      treatmentAmount: 0
+    })).toEqual([]);
+  });
 });
 
 describe('validateAuthoritativePaymentTreatments', () => {

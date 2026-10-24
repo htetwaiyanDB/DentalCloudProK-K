@@ -9,7 +9,7 @@ import { buildSupabasePublicUrl, deleteSupabaseStorageFile, isSupabaseStorageRea
 import { findInvalidTeeth } from '../utils/toothNumbering';
 import { getPaymentHeaderMethod, normalizePaymentAllocations, normalizePaymentMethod, validatePaymentAllocations } from '../utils/paymentMethods';
 import { normalizePaymentReceiptSnapshot } from '../utils/paymentReceipt';
-import { getPaymentAvailableTreatmentAmount, getPaymentTreatmentShare } from '../utils/paymentTreatmentAllocation';
+import { dedupePaymentRecords, getPaymentAvailableTreatmentAmount, getPaymentTreatmentShare } from '../utils/paymentTreatmentAllocation';
 import { DEFAULT_RECEIPT_PREFERENCES, normalizeReceiptPreferences } from '../utils/receiptPreferences';
 import { resolveDoctorCommissionType, usesFlatVisitCommission, validateDoctorCommissionPercentage, validateDoctorCommissionPerVisit, validateDoctorCommissionType } from '../utils/doctorCommission';
 import { allocateCommissionablePayments, calculateCommissionLedgerEntries } from '../utils/doctorCommissionLedger';
@@ -3820,7 +3820,7 @@ export const api = {
             let query = supabase
               .from('treatments')
               .select(withRelations
-                ? `id, location_id, patient_id, doctor_id, treatment_type_id, teeth, description, cost, standard_cost, discount_amount, pricing_note, doctor_earnings, date, patients(name, age, phone, city, ${regionColumn}, patient_type), doctors(name)`
+                ? `id, location_id, patient_id, doctor_id, treatment_type_id, teeth, description, cost, standard_cost, discount_amount, pricing_note, doctor_earnings, date, patients(name, age, phone, city, ${regionColumn}, patient_type, balance), doctors(name)`
                 : 'id, location_id, patient_id, doctor_id, treatment_type_id, teeth, description, cost, standard_cost, discount_amount, pricing_note, doctor_earnings, date')
               .lte('date', dateTo)
               .order('date', { ascending: true })
@@ -3859,6 +3859,9 @@ export const api = {
             patient_city: record.patients?.city || null,
             patient_township: record.patients?.[patientRegionColumn] || null,
             patient_type: record.patients?.patient_type || null,
+            patient_balance: record.patients?.balance === undefined || record.patients?.balance === null
+              ? null
+              : Number(record.patients.balance || 0),
             doctor_name: record.doctors?.name || undefined
           })));
           if (page.length < pageSize) break;
@@ -3896,6 +3899,7 @@ export const api = {
       dateTo?: string;
       doctorId?: string;
       patientId?: string;
+      ids?: string[];
       includeCommissionEntries?: boolean;
       throwOnError?: boolean;
     }): Promise<ClinicalRecord[]> => {
@@ -3916,6 +3920,7 @@ export const api = {
           if (options?.dateTo) query = query.lte('date', options.dateTo);
           if (options?.doctorId) query = query.eq('doctor_id', options.doctorId);
           if (options?.patientId) query = query.eq('patient_id', options.patientId);
+          if (options?.ids?.length) query = query.in('id', options.ids);
           let { data, error } = await query;
 
           if (error && isOptionalRelationAccessError(error, ['patients', 'doctors'])) {
@@ -3930,6 +3935,7 @@ export const api = {
             if (options?.dateTo) fallbackQuery = fallbackQuery.lte('date', options.dateTo);
             if (options?.doctorId) fallbackQuery = fallbackQuery.eq('doctor_id', options.doctorId);
             if (options?.patientId) fallbackQuery = fallbackQuery.eq('patient_id', options.patientId);
+            if (options?.ids?.length) fallbackQuery = fallbackQuery.in('id', options.ids);
             const fallback = await fallbackQuery;
             data = fallback.data;
             error = fallback.error;
@@ -4719,14 +4725,14 @@ export const api = {
         .limit(1);
       return !error;
     },
-    getMonthlyReportPayments: async ({ locationId, dateTo, patientIds, onProgress }: { locationId?: string; dateTo: string; patientIds: string[]; onProgress?: (completed: number, total: number) => void }): Promise<PaymentRecord[]> => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) throw new Error('A valid monthly report end date is required.');
+    getMonthlyReportPayments: async ({ locationId, dateFrom, dateTo, patientIds, onProgress }: { locationId?: string; dateFrom: string; dateTo: string; patientIds: string[]; onProgress?: (completed: number, total: number) => void }): Promise<PaymentRecord[]> => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(dateTo) || dateFrom > dateTo) {
+        throw new Error('A valid monthly report payment date range is required.');
+      }
       const patientBatches = chunkMonthlyReportPatientIds(patientIds);
-      if (patientBatches.length === 0) return [];
       const pageSize = 1000;
       const payments: PaymentRecord[] = [];
-      for (let batchIndex = 0; batchIndex < patientBatches.length; batchIndex += 1) {
-        const patientBatch = patientBatches[batchIndex];
+      const loadPaymentPages = async (patientBatch?: string[], rangeStart?: string) => {
         for (let offset = 0; ; offset += pageSize) {
         const buildQuery = (withRelations: boolean) => {
           let query = supabase
@@ -4739,7 +4745,8 @@ export const api = {
             .order('id', { ascending: true })
             .range(offset, offset + pageSize - 1);
           if (locationId) query = query.eq('location_id', locationId);
-          query = query.in('patient_id', patientBatch);
+          if (rangeStart) query = query.gte('payment_date', rangeStart);
+          if (patientBatch?.length) query = query.in('patient_id', patientBatch);
           return query;
         };
 
@@ -4759,14 +4766,22 @@ export const api = {
         payments.push(...page.map(mapPaymentRow));
         if (page.length < pageSize) break;
         }
+      };
+      for (let batchIndex = 0; batchIndex < patientBatches.length; batchIndex += 1) {
+        await loadPaymentPages(patientBatches[batchIndex]);
         onProgress?.(batchIndex + 1, patientBatches.length);
       }
-      return payments;
+      // Include collections made in the report period even when that patient
+      // has no treatment row in the same period (for example a manual service
+      // fee or a payment against older debt).
+      await loadPaymentPages(undefined, dateFrom);
+      return dedupePaymentRecords(payments);
     },
     getPayments: async (locationId?: string, options?: {
       dateFrom?: string;
       dateTo?: string;
       patientId?: string;
+      includeVoidsByVoidedAt?: boolean;
     }): Promise<PaymentRecord[]> => {
       const buildPaymentQuery = (columns: string) => (from: number, to: number) => {
         let query = supabase
@@ -4776,8 +4791,14 @@ export const api = {
           .order('id')
           .range(from, to);
         if (locationId) query = query.eq('location_id', locationId);
-        if (options?.dateFrom) query = query.gte('payment_date', options.dateFrom);
-        if (options?.dateTo) query = query.lte('payment_date', options.dateTo);
+        if (options?.dateFrom && options?.dateTo && options.includeVoidsByVoidedAt) {
+          query = query.or(
+            `and(payment_date.gte.${options.dateFrom},payment_date.lte.${options.dateTo}),and(voided_at.gte.${options.dateFrom}T00:00:00,voided_at.lte.${options.dateTo}T23:59:59.999)`
+          );
+        } else {
+          if (options?.dateFrom) query = query.gte('payment_date', options.dateFrom);
+          if (options?.dateTo) query = query.lte('payment_date', options.dateTo);
+        }
         if (options?.patientId) query = query.eq('patient_id', options.patientId);
         return query;
       };
@@ -6047,7 +6068,7 @@ export const api = {
   },
 
   expenses: {
-    getAll: async (locationId?: string): Promise<Expense[]> => {
+    getAll: async (locationId?: string, options?: { dateFrom?: string; dateTo?: string; throwOnError?: boolean }): Promise<Expense[]> => {
       try {
           const { data, error } = await fetchAllRows<Expense>((from, to) => {
             let query = supabase
@@ -6064,9 +6085,12 @@ export const api = {
           const syntheticMaterialExpenses = await fetchSyntheticMaterialCostExpenses(locationId, storedExpenses)
             .catch(() => []);
           return [...storedExpenses, ...syntheticMaterialExpenses]
+            .filter((expense) => !options?.dateFrom || expense.date >= options.dateFrom)
+            .filter((expense) => !options?.dateTo || expense.date <= options.dateTo)
             .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
         } catch (err) {
           console.warn("Error fetching expenses:", err);
+          if (options?.throwOnError) throw err;
           return [];
         }
       },
@@ -6753,7 +6777,7 @@ export const api = {
         loyalty_reversal: result.loyalty_reversal || null
       };
     },
-    getSales: async (locationId?: string, patientId?: string, options?: { throwOnError?: boolean }): Promise<MedicineSale[]> => {
+    getSales: async (locationId?: string, patientId?: string, options?: { throwOnError?: boolean; dateFrom?: string; dateTo?: string }): Promise<MedicineSale[]> => {
       try {
         const buildSalesQuery = (columns: string) => (from: number, to: number) => {
           let query = supabase
@@ -6764,6 +6788,8 @@ export const api = {
             .range(from, to);
           if (locationId) query = query.eq('location_id', locationId);
           if (patientId) query = query.eq('patient_id', patientId);
+          if (options?.dateFrom) query = query.gte('date', options.dateFrom);
+          if (options?.dateTo) query = query.lte('date', options.dateTo);
           return query;
         };
 
