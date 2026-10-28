@@ -677,4 +677,40 @@ describe('audit log export rows', () => {
     });
     expect(tableRow.mlsCosts).toBe(5000);
   });
+
+  it('includes payment-linked MLS costs in payment export rows', () => {
+    const payment: PaymentRecord = {
+      id: 'pay-with-mls', patientId: 'pat-1', patient_name: 'Saw Hser Phoe Htoo',
+      amount: 1_650_000, clearedAmount: 1_650_000, date: '2026-10-02',
+      type: 'FULL', remainingBalance: 0
+    };
+    const rows = buildAuditLogRows([], [], true, [payment]);
+    const [tableRow] = buildAuditLogExportTableRows(rows, 'MMK', {
+      'pay-with-mls': { auditLogId: 'audit-payment', materialTotal: 253_000, labTotal: 0, specialDoctorTotal: 0, assignedSpecialDoctorTotal: 0, totalAmount: 253_000, itemCount: 1, materialItemCount: 1, labItemCount: 0, specialDoctorItemCount: 0, assignedSpecialDoctorItemCount: 0 }
+    });
+
+    expect(tableRow.mlsCosts).toBe(253_000);
+  });
+
+  it('includes total receipt medicine pricing in payment export rows', () => {
+    const payment: PaymentRecord = {
+      id: 'pay-with-medicine', patientId: 'pat-1', patient_name: 'Saw Hser Phoe Htoo',
+      amount: 25_000, clearedAmount: 25_000, date: '2026-10-02',
+      type: 'FULL', remainingBalance: 0,
+      receiptSnapshot: {
+        version: 2, receiptType: 'PAYMENT', receiptNumber: 'REC-1', receiptDate: '2026-10-02', currency: 'MMK',
+        clinic: { appName: 'K&K', headerTitle: 'Dental Care', email: '', phone: '' },
+        patient: { id: 'pat-1', name: 'Saw Hser Phoe Htoo' },
+        payment: { amountPaid: 25_000, method: 'CASH', status: 'FULL', balanceBefore: 25_000, balanceAfter: 0 },
+        medicines: [
+          { id: 'med-1', date: '2026-10-02', medicineName: 'Amoxicillin', quantity: 2, unitPrice: 5_000, totalPrice: 10_000 },
+          { id: 'med-2', date: '2026-10-02', medicineName: 'Paracetamol', quantity: 3, unitPrice: 5_000, totalPrice: 15_000 }
+        ]
+      }
+    };
+    const rows = buildAuditLogRows([], [], true, [payment]);
+    const [tableRow] = buildAuditLogExportTableRows(rows, 'MMK');
+
+    expect(tableRow.medicinePricing).toBe(25_000);
+  });
 });

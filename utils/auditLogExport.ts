@@ -28,6 +28,7 @@ export interface AuditLogExportTableRow {
   patient: string;
   clinician: string;
   activity: string;
+  medicinePricing: number | null;
   recordedBy: string;
   patientType: string;
   patientBalance: string;
@@ -77,6 +78,11 @@ const getPaymentServiceFeeAmount = (payment: PaymentRecord): number => {
   if (snapshotFee > 0) return snapshotFee;
 
   return getPositiveNumber((payment as PaymentRecord & { serviceFeeAmount?: number }).serviceFeeAmount);
+};
+
+const getPaymentMedicinePricing = (payment: PaymentRecord): number => {
+  const medicines = payment.receiptSnapshot?.medicines || [];
+  return medicines.reduce((sum, medicine) => sum + getPositiveNumber(medicine.totalPrice), 0);
 };
 
 const calculateTreatmentServiceCharges = (
@@ -404,6 +410,7 @@ export const buildAuditLogExportTableRows = (
         patient: appointment.patient_name || 'Unknown',
         clinician: formatAuditDoctorName(appointment.doctor_name),
         activity: `Appointment made for ${appointment.date || '-'} at ${appointment.time || '-'} (${appointment.type || 'Checkup'}, ${appointment.status || '-'})`,
+        medicinePricing: null,
         recordedBy: `${appointment.created_by_user_name || 'Unknown'}\n${formatAuditCreatedAt(appointment.created_at)}`,
         patientType: '-',
         patientBalance: formatAuditPatientBalance(appointment.patient_balance, currency),
@@ -424,6 +431,7 @@ export const buildAuditLogExportTableRows = (
         patient: rescheduleLog.patient_name || 'Unknown',
         clinician: formatAuditDoctorName(rescheduleLog.doctor_name),
         activity: `Original Date: ${rescheduleLog.original_date || '-'} -> New Date: ${rescheduleLog.new_date || '-'}\nReason: ${rescheduleLog.reason || '-'}`,
+        medicinePricing: null,
         recordedBy: `${rescheduleLog.admin_name || 'Unknown'}\n${formatAuditCreatedAt(rescheduleLog.created_at)}`,
         patientType: '-',
         patientBalance: '-',
@@ -439,6 +447,7 @@ export const buildAuditLogExportTableRows = (
     if (row.kind === 'payment') {
       const payment = row.payment;
       const isVoided = Boolean(payment.voidedAt);
+      const mlsCosts = getPositiveNumber(costSummaries[payment.id]?.totalAmount);
       return {
         type: 'Payment',
         dateTime: formatAuditCreatedAt(payment.voidedAt || payment.createdAt || payment.date),
@@ -447,6 +456,7 @@ export const buildAuditLogExportTableRows = (
         activity: isVoided
           ? `VOID — reversed ${formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}\nReason: ${payment.voidReason || 'Not recorded'}`
           : `Patient paid ${formatCurrency(payment.amount, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}`,
+        medicinePricing: getPaymentMedicinePricing(payment) || null,
         recordedBy: isVoided
           ? `${payment.voidedByUserName || 'Unknown'} (voided)`
           : payment.createdByUserName || 'Unknown',
@@ -455,7 +465,7 @@ export const buildAuditLogExportTableRows = (
         amount: payment.amount,
         discount: isVoided ? null : getAuditPaymentDiscount(payment) || null,
         serviceCharges: null,
-        mlsCosts: null,
+        mlsCosts: mlsCosts || null,
         doctorEarned: getPositiveNumber(payment.doctorEarned) || null,
         paymentMethod: isVoided ? 'VOID' : payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)
       };
@@ -476,6 +486,7 @@ export const buildAuditLogExportTableRows = (
       patient: record.patient_name || 'Unknown',
       clinician: formatAuditDoctorName(record.doctor_name),
       activity: `${activityLines}\nTeeth: ${teethLabel}`,
+      medicinePricing: null,
       recordedBy: 'Clinical record',
       patientType: record.patient_type || '-',
       patientBalance: formatAuditPatientBalance(record.patient_balance, currency),
