@@ -1,4 +1,4 @@
-import type { Appointment, AppointmentRescheduleLog, ClinicalRecord, PaymentRecord } from '../types';
+import type { Appointment, AppointmentRescheduleLog, ClinicalRecord, PaymentRecord, TreatmentCostSummary } from '../types';
 import { Currency, formatCurrency } from './currency';
 import { filterAuditRowsByDateRange } from './auditLogFilters';
 import { formatTeethArray, formatTeethWithPosition } from './toothNumbering';
@@ -28,12 +28,14 @@ export interface AuditLogExportTableRow {
   patient: string;
   clinician: string;
   activity: string;
+  medicinePricing: number | null;
   recordedBy: string;
   patientType: string;
   patientBalance: string;
   amount: number | null;
   discount: number | null;
   serviceCharges: number | null;
+  mlsCosts: number | null;
   doctorEarned: number | null;
   paymentMethod: string;
 }
@@ -76,6 +78,11 @@ const getPaymentServiceFeeAmount = (payment: PaymentRecord): number => {
   if (snapshotFee > 0) return snapshotFee;
 
   return getPositiveNumber((payment as PaymentRecord & { serviceFeeAmount?: number }).serviceFeeAmount);
+};
+
+const getPaymentMedicinePricing = (payment: PaymentRecord): number => {
+  const medicines = payment.receiptSnapshot?.medicines || [];
+  return medicines.reduce((sum, medicine) => sum + getPositiveNumber(medicine.totalPrice), 0);
 };
 
 const calculateTreatmentServiceCharges = (
@@ -156,7 +163,7 @@ export const buildAuditLogRows = (
   payments: PaymentRecord[] = [],
   rescheduleLogs: AppointmentRescheduleLog[] = []
 ): AuditExportRow[] => {
-  const visiblePayments = payments.filter((payment) => !payment.voidedAt);
+  const activePayments = payments.filter((payment) => !payment.voidedAt);
   const groupedTreatmentMap = new Map<string, ClinicalRecord[]>();
 
   records.forEach((record) => {
@@ -198,7 +205,7 @@ export const buildAuditLogRows = (
     base.patient_type = patientType;
     base.doctor_name = doctorNames.length > 0 ? doctorNames.join(', Dr. ') : undefined;
     base.doctor_id = doctorIds.length === 1 ? doctorIds[0] : undefined;
-    base.serviceCharges = calculateTreatmentServiceCharges(sorted, visiblePayments, appointments);
+    base.serviceCharges = calculateTreatmentServiceCharges(sorted, activePayments, appointments);
     base._groupedRecords = sorted;
 
     treatmentRows.push({
@@ -229,8 +236,7 @@ export const buildAuditLogRows = (
       );
     });
   });
-  const fallbackCommissionEntries = calculateCommissionLedgerEntries(
-    records.map((record) => ({
+  const commissionTreatments = records.map((record) => ({
       id: record.id,
       patientId: record.patient_id,
       doctorId: record.doctor_id,
@@ -241,30 +247,26 @@ export const buildAuditLogRows = (
       specialization: record.doctor_specialization,
       commissionPercentage: record.doctor_commission_percentage,
       commissionPerVisit: record.doctor_commission_per_visit
-    })),
-    allocateCommissionablePayments(
-      records.map((record) => ({
-        id: record.id,
-        patientId: record.patient_id,
-        doctorId: record.doctor_id,
-        treatmentTypeId: record.treatment_type_id,
-        date: record.date,
-        cost: getPositiveNumber(record.cost),
-        commissionType: record.doctor_commission_type,
-        specialization: record.doctor_specialization,
-        commissionPercentage: record.doctor_commission_percentage,
-        commissionPerVisit: record.doctor_commission_per_visit
-      })),
-      visiblePayments.map((payment) => ({
-        id: payment.id,
-        patientId: payment.patientId,
-        date: payment.date,
-        createdAt: payment.createdAt,
-        commissionableAmount: getPaymentTreatmentShare(payment),
-        treatmentIds: getPaymentTreatmentIds(payment)
-      }))
-    )
+    }));
+  const commissionPayments = activePayments.map((payment) => ({
+    id: payment.id,
+    patientId: payment.patientId,
+    date: payment.date,
+    createdAt: payment.createdAt,
+    commissionableAmount: getPaymentTreatmentShare(payment),
+    treatmentIds: getPaymentTreatmentIds(payment)
+  }));
+  const inferredPaymentAllocations = allocateCommissionablePayments(commissionTreatments, commissionPayments);
+  const fallbackCommissionEntries = calculateCommissionLedgerEntries(
+    commissionTreatments,
+    inferredPaymentAllocations
   );
+  const inferredTreatmentIdsByPayment = new Map<string, string[]>();
+  inferredPaymentAllocations.forEach((allocation) => {
+    const treatmentIds = inferredTreatmentIdsByPayment.get(allocation.paymentId) || [];
+    if (!treatmentIds.includes(allocation.treatmentId)) treatmentIds.push(allocation.treatmentId);
+    inferredTreatmentIdsByPayment.set(allocation.paymentId, treatmentIds);
+  });
   const fallbackDoctorEarningsByPayment = new Map<string, number>();
   fallbackCommissionEntries.forEach((entry) => {
     fallbackDoctorEarningsByPayment.set(
@@ -273,10 +275,13 @@ export const buildAuditLogRows = (
     );
   });
   const paymentRows: AuditExportRow[] = includeAppointments
-    ? visiblePayments.map((payment) => {
+    ? payments.map((payment) => {
         const linkedTreatmentIds = getPaymentTreatmentIds(payment);
-        const relatedTreatments = linkedTreatmentIds.length > 0
-          ? linkedTreatmentIds.map((treatmentId) => treatmentById.get(treatmentId)).filter((record): record is ClinicalRecord => Boolean(record))
+        const resolvedTreatmentIds = linkedTreatmentIds.length > 0
+          ? linkedTreatmentIds
+          : inferredTreatmentIdsByPayment.get(payment.id) || [];
+        const relatedTreatments = resolvedTreatmentIds.length > 0
+          ? resolvedTreatmentIds.map((treatmentId) => treatmentById.get(treatmentId)).filter((record): record is ClinicalRecord => Boolean(record))
           : records.filter((record) => record.patient_id === payment.patientId && record.date === payment.date);
         const doctorNames = Array.from(new Map(
           relatedTreatments
@@ -287,7 +292,7 @@ export const buildAuditLogRows = (
 
         return {
           kind: 'payment',
-          sortDate: payment.createdAt || `${payment.date || ''}T23:59:58`,
+          sortDate: payment.voidedAt || payment.createdAt || `${payment.date || ''}T23:59:58`,
           payment: {
             ...payment,
             _doctorName: doctorNames.length > 0 ? doctorNames.join(', Dr. ') : undefined,
@@ -391,7 +396,11 @@ export const filterAuditLogRowsForExport = <T extends AuditExportRow>(rows: T[],
   });
 };
 
-export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: Currency): AuditLogExportTableRow[] => {
+export const buildAuditLogExportTableRows = (
+  rows: AuditExportRow[],
+  currency: Currency,
+  costSummaries: Record<string, TreatmentCostSummary> = {}
+): AuditLogExportTableRow[] => {
   return rows.map((row) => {
     if (row.kind === 'appointment') {
       const appointment = row.appointment;
@@ -401,12 +410,14 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
         patient: appointment.patient_name || 'Unknown',
         clinician: formatAuditDoctorName(appointment.doctor_name),
         activity: `Appointment made for ${appointment.date || '-'} at ${appointment.time || '-'} (${appointment.type || 'Checkup'}, ${appointment.status || '-'})`,
+        medicinePricing: null,
         recordedBy: `${appointment.created_by_user_name || 'Unknown'}\n${formatAuditCreatedAt(appointment.created_at)}`,
         patientType: '-',
         patientBalance: formatAuditPatientBalance(appointment.patient_balance, currency),
         amount: null,
         discount: null,
         serviceCharges: null,
+        mlsCosts: null,
         doctorEarned: null,
         paymentMethod: '-'
       };
@@ -420,12 +431,14 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
         patient: rescheduleLog.patient_name || 'Unknown',
         clinician: formatAuditDoctorName(rescheduleLog.doctor_name),
         activity: `Original Date: ${rescheduleLog.original_date || '-'} -> New Date: ${rescheduleLog.new_date || '-'}\nReason: ${rescheduleLog.reason || '-'}`,
+        medicinePricing: null,
         recordedBy: `${rescheduleLog.admin_name || 'Unknown'}\n${formatAuditCreatedAt(rescheduleLog.created_at)}`,
         patientType: '-',
         patientBalance: '-',
         amount: null,
         discount: null,
         serviceCharges: null,
+        mlsCosts: null,
         doctorEarned: null,
         paymentMethod: '-'
       };
@@ -434,14 +447,16 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
     if (row.kind === 'payment') {
       const payment = row.payment;
       const isVoided = Boolean(payment.voidedAt);
+      const mlsCosts = getPositiveNumber(costSummaries[payment.id]?.totalAmount);
       return {
         type: 'Payment',
-        dateTime: formatAuditCreatedAt(payment.createdAt || payment.date),
+        dateTime: formatAuditCreatedAt(payment.voidedAt || payment.createdAt || payment.date),
         patient: payment.patient_name || 'Unknown',
         clinician: formatAuditDoctorName(payment._doctorName),
         activity: isVoided
           ? `VOID — reversed ${formatCurrency(payment.voidedAmount ?? payment.originalAmount ?? 0, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}\nReason: ${payment.voidReason || 'Not recorded'}`
           : `Patient paid ${formatCurrency(payment.amount, currency)}${payment.receiptNumber ? ` (${payment.receiptNumber})` : ''}`,
+        medicinePricing: getPaymentMedicinePricing(payment) || null,
         recordedBy: isVoided
           ? `${payment.voidedByUserName || 'Unknown'} (voided)`
           : payment.createdByUserName || 'Unknown',
@@ -450,6 +465,7 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
         amount: payment.amount,
         discount: isVoided ? null : getAuditPaymentDiscount(payment) || null,
         serviceCharges: null,
+        mlsCosts: mlsCosts || null,
         doctorEarned: getPositiveNumber(payment.doctorEarned) || null,
         paymentMethod: isVoided ? 'VOID' : payment.allocations?.length ? formatPaymentAllocations(payment.allocations) : formatPaymentMethod(payment.paymentMethod)
       };
@@ -457,6 +473,10 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
 
     const record = row.record;
     const groupedRecords = record._groupedRecords && record._groupedRecords.length > 0 ? record._groupedRecords : [record];
+    const mlsCosts = groupedRecords.reduce(
+      (sum, groupedRecord) => sum + getPositiveNumber(costSummaries[groupedRecord.id]?.totalAmount),
+      0
+    );
     const activityLines = groupedRecords.map((groupedRecord) => `• ${groupedRecord.description}`).join('\n');
     const teethLabel = record.teeth && record.teeth.length > 0 ? formatTeethWithPosition(record.teeth) : 'General';
 
@@ -466,12 +486,14 @@ export const buildAuditLogExportTableRows = (rows: AuditExportRow[], currency: C
       patient: record.patient_name || 'Unknown',
       clinician: formatAuditDoctorName(record.doctor_name),
       activity: `${activityLines}\nTeeth: ${teethLabel}`,
+      medicinePricing: null,
       recordedBy: 'Clinical record',
       patientType: record.patient_type || '-',
       patientBalance: formatAuditPatientBalance(record.patient_balance, currency),
       amount: record.cost || 0,
       discount: getTreatmentDiscount(record) || null,
       serviceCharges: getPositiveNumber(record.serviceCharges) || null,
+      mlsCosts: mlsCosts || null,
       doctorEarned: record.doctorEarnings || null,
       paymentMethod: '-'
     };

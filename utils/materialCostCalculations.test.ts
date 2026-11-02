@@ -71,6 +71,13 @@ describe('material cost calculations', () => {
       .toEqual({ 'treatment-1': 60_000 });
   });
 
+  it('does not count a voided collection as treatment payment', () => {
+    expect(calculateCollectedByTreatmentId(
+      [treatment()],
+      [payment({ voidedAt: '2026-07-14T09:00:00Z' })]
+    )).toEqual({});
+  });
+
   it('deduplicates legacy and persisted copies by receipt number', () => {
     const persisted = payment({ id: 'persisted-id', receiptNumber: 'REC-100', amount: 60_000, clearedAmount: 60_000 });
     const legacy = payment({ id: 'legacy-id', receiptNumber: 'REC-100', amount: 60_000, clearedAmount: 60_000 });

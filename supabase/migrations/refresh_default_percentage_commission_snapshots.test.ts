@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const migration = readFileSync(resolve(process.cwd(), 'supabase/migrations/20260910000000_refresh_default_percentage_commission_snapshots.sql'), 'utf8');
+const migration = readFileSync(resolve(process.cwd(), 'supabase/migrations/20260910000000_refresh_default_percentage_commission_snapshots.sql'), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 describe('default percentage commission snapshot refresh migration', () => {
   it('allows an explicit default snapshot correction without re-resolving overrides', () => {

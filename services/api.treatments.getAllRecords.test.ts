@@ -103,6 +103,19 @@ describe('treatments.getAllRecords', () => {
     expect(supabaseMock.calls).toContainEqual({ action: 'eq', column: 'location_id', value: 'location-1' });
   });
 
+  it('loads exact historical treatment ids needed by payment audit rows', async () => {
+    await api.treatments.getAllRecords('location-1', {
+      limit: null,
+      ids: ['treatment-old-1', 'treatment-old-2']
+    });
+
+    expect(supabaseMock.calls).toContainEqual({
+      action: 'in',
+      column: 'id',
+      value: ['treatment-old-1', 'treatment-old-2']
+    });
+  });
+
   it('keeps audit treatments visible when optional commission ledger enrichment fails', async () => {
     supabaseMock.rows = [{
       id: 'treatment-1',

@@ -401,6 +401,33 @@ describe('audit log export rows', () => {
     expect(paymentRows.map((row) => row.kind === 'payment' ? row.payment.doctorEarned : 0).sort((a, b) => a - b)).toEqual([10000, 20000]);
   });
 
+  it('shows the doctor on an unlinked final balance payment made after the treatment date', () => {
+    const balanceTreatment: ClinicalRecord = {
+      ...records[0],
+      id: 'balance-treatment',
+      doctor_id: 'doc-1',
+      doctor_name: 'Hnin',
+      cost: 300_000,
+      doctorEarningEntries: [],
+      doctor_commission_type: 'percentage',
+      doctor_commission_percentage: 100,
+      date: '2026-10-20'
+    };
+    const balancePayments: PaymentRecord[] = [
+      { ...payments[0], id: 'balance-first', patientId: 'pat-1', amount: 200_000, clearedAmount: 200_000, treatmentIds: ['balance-treatment'], receiptSnapshot: null, date: '2026-10-20' },
+      { ...payments[0], id: 'balance-final', patientId: 'pat-1', amount: 100_000, clearedAmount: 100_000, treatmentIds: [], receiptSnapshot: null, date: '2026-10-21' }
+    ];
+
+    const finalPaymentRow = buildAuditLogRows([balanceTreatment], [], true, balancePayments)
+      .find((row) => row.kind === 'payment' && row.payment.id === 'balance-final');
+
+    expect(finalPaymentRow?.kind).toBe('payment');
+    if (finalPaymentRow?.kind === 'payment') {
+      expect(finalPaymentRow.payment._doctorName).toBe('Hnin');
+      expect(finalPaymentRow.payment.doctorEarned).toBe(100_000);
+    }
+  });
+
   it('derives legacy receipt discounts and does not double-count duplicate treatment links', () => {
     const legacyPayment: PaymentRecord = {
       ...payments[0],
@@ -620,7 +647,7 @@ describe('audit log export rows', () => {
     expect(filterAuditLogRowsForExport(rows, { searchTerm: '1A' })).toHaveLength(1);
   });
 
-  it('keeps voided payments out of every audit-log UI and export row', () => {
+  it('keeps voided payments in the audit trail with reversal details', () => {
     const voidedPayment: PaymentRecord = {
       id: 'pay-voided', patientId: 'pat-1', patient_name: 'Aung Min', amount: 0,
       clearedAmount: 0, originalAmount: 32_000, voidedAmount: 32_000,
@@ -628,6 +655,62 @@ describe('audit log export rows', () => {
       date: '2026-09-08', type: 'PARTIAL', remainingBalance: 32_000
     };
 
-    expect(buildAuditLogRows([], [], true, [voidedPayment])).toEqual([]);
+    const rows = buildAuditLogRows([], [], true, [voidedPayment]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: 'payment', sortDate: '2026-09-08T09:56:00Z' });
+    expect(buildAuditLogExportTableRows(rows, 'MMK')[0]).toMatchObject({
+      type: 'Payment',
+      dateTime: expect.stringContaining('2026'),
+      amount: 0,
+      discount: null,
+      doctorEarned: null,
+      paymentMethod: 'VOID'
+    });
+    expect(buildAuditLogExportTableRows(rows, 'MMK')[0].activity).toContain('Duplicate payment collected');
+  });
+
+  it('includes grouped MLS costs in treatment export rows', () => {
+    const rows = buildAuditLogRows(records.slice(0, 2), [], false);
+    const [tableRow] = buildAuditLogExportTableRows(rows, 'MMK', {
+      'tr-1': { auditLogId: 'audit-1', materialTotal: 1000, labTotal: 2000, specialDoctorTotal: 0, assignedSpecialDoctorTotal: 0, totalAmount: 3000, itemCount: 2, materialItemCount: 1, labItemCount: 1, specialDoctorItemCount: 0, assignedSpecialDoctorItemCount: 0 },
+      'tr-2': { auditLogId: 'audit-2', materialTotal: 500, labTotal: 0, specialDoctorTotal: 1500, assignedSpecialDoctorTotal: 1500, totalAmount: 2000, itemCount: 2, materialItemCount: 1, labItemCount: 0, specialDoctorItemCount: 1, assignedSpecialDoctorItemCount: 1 }
+    });
+    expect(tableRow.mlsCosts).toBe(5000);
+  });
+
+  it('includes payment-linked MLS costs in payment export rows', () => {
+    const payment: PaymentRecord = {
+      id: 'pay-with-mls', patientId: 'pat-1', patient_name: 'Saw Hser Phoe Htoo',
+      amount: 1_650_000, clearedAmount: 1_650_000, date: '2026-10-02',
+      type: 'FULL', remainingBalance: 0
+    };
+    const rows = buildAuditLogRows([], [], true, [payment]);
+    const [tableRow] = buildAuditLogExportTableRows(rows, 'MMK', {
+      'pay-with-mls': { auditLogId: 'audit-payment', materialTotal: 253_000, labTotal: 0, specialDoctorTotal: 0, assignedSpecialDoctorTotal: 0, totalAmount: 253_000, itemCount: 1, materialItemCount: 1, labItemCount: 0, specialDoctorItemCount: 0, assignedSpecialDoctorItemCount: 0 }
+    });
+
+    expect(tableRow.mlsCosts).toBe(253_000);
+  });
+
+  it('includes total receipt medicine pricing in payment export rows', () => {
+    const payment: PaymentRecord = {
+      id: 'pay-with-medicine', patientId: 'pat-1', patient_name: 'Saw Hser Phoe Htoo',
+      amount: 25_000, clearedAmount: 25_000, date: '2026-10-02',
+      type: 'FULL', remainingBalance: 0,
+      receiptSnapshot: {
+        version: 2, receiptType: 'PAYMENT', receiptNumber: 'REC-1', receiptDate: '2026-10-02', currency: 'MMK',
+        clinic: { appName: 'K&K', headerTitle: 'Dental Care', email: '', phone: '' },
+        patient: { id: 'pat-1', name: 'Saw Hser Phoe Htoo' },
+        payment: { amountPaid: 25_000, method: 'CASH', status: 'FULL', balanceBefore: 25_000, balanceAfter: 0 },
+        medicines: [
+          { id: 'med-1', date: '2026-10-02', medicineName: 'Amoxicillin', quantity: 2, unitPrice: 5_000, totalPrice: 10_000 },
+          { id: 'med-2', date: '2026-10-02', medicineName: 'Paracetamol', quantity: 3, unitPrice: 5_000, totalPrice: 15_000 }
+        ]
+      }
+    };
+    const rows = buildAuditLogRows([], [], true, [payment]);
+    const [tableRow] = buildAuditLogExportTableRows(rows, 'MMK');
+
+    expect(tableRow.medicinePricing).toBe(25_000);
   });
 });

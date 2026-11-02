@@ -1,7 +1,10 @@
 import type { Appointment, ClinicalRecord, Doctor, MedicineSale, Patient, PaymentAllocation, PaymentMethod, PaymentRecord } from '../types';
 import type { Currency } from './currency';
+import { allocateCommissionablePayments } from './doctorCommissionLedger';
 import { sumMoney } from './money';
+import { dedupePaymentRecords, getPaymentTreatmentIds, getPaymentTreatmentShare } from './paymentTreatmentAllocation';
 import { getReceiptTreatmentAllocationAmount } from './paymentReceipt';
+import { getPaymentServiceFeeAmount } from './serviceFee';
 
 export type PatientReportTimelineKind = 'appointment' | 'treatment' | 'medicine';
 
@@ -67,33 +70,18 @@ const positiveNumber = (value: unknown): number => {
 const newestFirst = <T extends { date: string; time?: string; id: string }>(a: T, b: T): number =>
   `${b.date || ''}T${b.time || ''}`.localeCompare(`${a.date || ''}T${a.time || ''}`) || b.id.localeCompare(a.id);
 
-const getPaymentTreatmentIds = (payment: PaymentRecord): string[] => Array.from(new Set([
-  ...(payment.treatmentIds || []),
-  ...(payment.receiptSnapshot?.treatments || []).map((treatment) => treatment.id)
-].filter(Boolean)));
-
-const getPaymentDedupeKey = (payment: PaymentRecord): string => payment.id || payment.receiptNumber || [
-  payment.patientId,
-  payment.date,
-  payment.clearedAmount ?? payment.amount,
-  payment.createdAt || '',
-  payment.paymentMethod || ''
-].join('|');
-
-const getTreatmentShareOfPayment = (payment: PaymentRecord, visibleTreatmentIds: string[]): number => {
-  const collected = positiveNumber(payment.clearedAmount ?? payment.amount);
+const getVisibleTreatmentShare = (payment: PaymentRecord, visibleTreatmentIds: string[]): number => {
   const snapshot = payment.receiptSnapshot;
-  if (!snapshot) return collected;
-
+  if (!snapshot) return 0;
   const snapshotTreatments = snapshot.treatments || [];
-  const treatmentValue = snapshotTreatments.reduce((total, item) => total + positiveNumber(item.finalCost), 0);
+  const totalTreatmentValue = snapshotTreatments.reduce((sum, item) => sum + positiveNumber(item.finalCost), 0);
   const visibleIds = new Set(visibleTreatmentIds);
   const visibleTreatmentValue = snapshotTreatments
     .filter((item) => visibleIds.has(item.id))
-    .reduce((total, item) => total + positiveNumber(item.finalCost), 0);
-  if (treatmentValue <= 0 || visibleTreatmentValue <= 0) return 0;
-  const treatmentAllocation = getReceiptTreatmentAllocationAmount(collected, snapshot);
-  return treatmentValue > 0 ? treatmentAllocation * (visibleTreatmentValue / treatmentValue) : 0;
+    .reduce((sum, item) => sum + positiveNumber(item.finalCost), 0);
+  if (totalTreatmentValue <= 0 || visibleTreatmentValue <= 0) return 0;
+  const collected = positiveNumber(payment.clearedAmount ?? payment.amount);
+  return getReceiptTreatmentAllocationAmount(collected, snapshot) * (visibleTreatmentValue / totalTreatmentValue);
 };
 
 export const buildPatientReport = ({
@@ -120,20 +108,33 @@ export const buildPatientReport = ({
     .sort(newestFirst);
   const patientTreatments = treatments.filter((treatment) => treatment.patient_id === patient.id);
   const patientMedicines = medicineSales.filter((sale) => sale.patient_id === patient.id);
-  const patientPayments = Array.from(new Map(
-    payments
-      .filter((payment) => payment.patientId === patient.id && !payment.voidedAt)
-      .map((payment) => [getPaymentDedupeKey(payment), payment])
-  ).values()).sort(newestFirst);
+  const patientPayments = dedupePaymentRecords(
+    payments.filter((payment) => payment.patientId === patient.id && !payment.voidedAt)
+  ).sort(newestFirst);
 
   const treatmentValue = sumMoney(patientTreatments.map((record) => positiveNumber(record.cost)), currency);
   const medicineValue = sumMoney(patientMedicines.map((sale) => positiveNumber(sale.total_price)), currency);
-  const serviceFeeValue = sumMoney(
-    patientAppointments
-      .filter((appointment) => appointment.clinical_fee_status === 'APPLIED')
-      .map((appointment) => positiveNumber(appointment.clinical_fee_amount)),
-    currency
-  );
+  const paymentServiceFeeByVisit = new Map<string, number>();
+  patientPayments.forEach((payment) => {
+    const amount = positiveNumber(getPaymentServiceFeeAmount(payment));
+    if (amount <= 0) return;
+    const visitKey = `${payment.patientId}|${payment.date}`;
+    paymentServiceFeeByVisit.set(visitKey, Math.max(paymentServiceFeeByVisit.get(visitKey) || 0, amount));
+  });
+  const appointmentServiceFeeByVisit = new Map<string, number>();
+  patientAppointments.forEach((appointment) => {
+    if (appointment.clinical_fee_status !== 'APPLIED') return;
+    const visitKey = `${patient.id}|${appointment.date}`;
+    if (paymentServiceFeeByVisit.has(visitKey)) return;
+    appointmentServiceFeeByVisit.set(
+      visitKey,
+      Math.max(appointmentServiceFeeByVisit.get(visitKey) || 0, positiveNumber(appointment.clinical_fee_amount))
+    );
+  });
+  const serviceFeeValue = sumMoney([
+    ...paymentServiceFeeByVisit.values(),
+    ...appointmentServiceFeeByVisit.values()
+  ], currency);
 
   const visitDates = Array.from(new Set([
     ...patientAppointments.filter((appointment) => appointment.status === 'Completed').map((appointment) => appointment.date),
@@ -198,49 +199,45 @@ export const buildPatientReport = ({
     .filter((entry) => entry.value > 0);
 
   const treatmentById = new Map(patientTreatments.map((treatment) => [treatment.id, treatment]));
-  const treatmentIdsByDate = new Map<string, string[]>();
-  patientTreatments.forEach((treatment) => {
-    if (!treatment.date) return;
-    treatmentIdsByDate.set(treatment.date, [...(treatmentIdsByDate.get(treatment.date) || []), treatment.id]);
-  });
-
   const paymentDetailsByTreatmentId = new Map<string, PatientReportPaymentDetail[]>();
-  [...patientPayments].reverse().forEach((payment) => {
-    const explicitIds = getPaymentTreatmentIds(payment);
-    const linkedIds = (explicitIds.length > 0 ? explicitIds : treatmentIdsByDate.get(payment.date) || [])
-      .filter((id) => treatmentById.has(id));
-    const remainingByTreatment = linkedIds.map((treatmentId) => {
-      const previousDetails = paymentDetailsByTreatmentId.get(treatmentId) || [];
-      const previouslyPaid = previousDetails.reduce((total, detail) => total + detail.amount, 0);
+  const paymentById = new Map(patientPayments.map((payment) => [payment.id, payment]));
+  const treatmentAllocations = allocateCommissionablePayments(
+    patientTreatments.map((treatment) => ({
+      id: treatment.id,
+      patientId: treatment.patient_id,
+      date: treatment.date,
+      cost: positiveNumber(treatment.cost)
+    })),
+    patientPayments.map((payment) => {
+      const explicitIds = getPaymentTreatmentIds(payment);
+      const visibleIds = explicitIds.filter((id) => treatmentById.has(id));
+      const isPartiallyVisible = explicitIds.length > visibleIds.length;
       return {
-        treatmentId,
-        previousDetails,
-        remaining: Math.max(0, positiveNumber(treatmentById.get(treatmentId)?.cost) - previouslyPaid)
-      };
-    }).filter((item) => item.remaining > 0);
-    const totalRemaining = remainingByTreatment.reduce((total, item) => total + item.remaining, 0);
-    const paymentTreatmentShare = sumMoney([getTreatmentShareOfPayment(payment, linkedIds)], currency);
-    let treatmentPayment = Math.min(totalRemaining, paymentTreatmentShare);
-    if (remainingByTreatment.length === 0 || treatmentPayment <= 0) return;
-
-    remainingByTreatment.forEach((item, index) => {
-      const proportionalAmount = index === remainingByTreatment.length - 1
-        ? treatmentPayment
-        : Math.min(treatmentPayment, paymentTreatmentShare * (item.remaining / totalRemaining));
-      const attributedAmount = Math.min(item.remaining, sumMoney([proportionalAmount], currency));
-      if (attributedAmount <= 0) return;
-      item.previousDetails.push({
         id: payment.id,
+        patientId: payment.patientId,
         date: payment.date,
-        amount: attributedAmount,
-        paymentMethod: payment.paymentMethod,
-        allocations: payment.allocations,
-        receiptNumber: payment.receiptNumber || payment.receiptSnapshot?.receiptNumber,
-        balanceAfter: positiveNumber(payment.patientCurrentBalance ?? payment.remainingBalance)
-      });
-      treatmentPayment = Math.max(0, sumMoney([treatmentPayment, -attributedAmount], currency));
-      paymentDetailsByTreatmentId.set(item.treatmentId, item.previousDetails);
+        createdAt: payment.createdAt,
+        commissionableAmount: isPartiallyVisible
+          ? getVisibleTreatmentShare(payment, visibleIds)
+          : getPaymentTreatmentShare(payment),
+        treatmentIds: isPartiallyVisible ? visibleIds : explicitIds
+      };
+    })
+  );
+  treatmentAllocations.forEach((allocation) => {
+    const payment = paymentById.get(allocation.paymentId);
+    if (!payment || !treatmentById.has(allocation.treatmentId) || allocation.amount <= 0) return;
+    const details = paymentDetailsByTreatmentId.get(allocation.treatmentId) || [];
+    details.push({
+      id: payment.id,
+      date: payment.date,
+      amount: sumMoney([allocation.amount], currency),
+      paymentMethod: payment.paymentMethod,
+      allocations: payment.allocations,
+      receiptNumber: payment.receiptNumber || payment.receiptSnapshot?.receiptNumber,
+      balanceAfter: positiveNumber(payment.patientCurrentBalance ?? payment.remainingBalance)
     });
+    paymentDetailsByTreatmentId.set(allocation.treatmentId, details);
   });
 
   const treatmentLedger = [...patientTreatments]

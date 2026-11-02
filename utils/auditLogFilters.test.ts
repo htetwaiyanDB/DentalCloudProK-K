@@ -68,6 +68,23 @@ describe('audit log date filtering', () => {
     expect(filtered).toHaveLength(1);
   });
 
+  it('uses the reversal date for a voided payment audit event', () => {
+    const filtered = filterAuditRowsByDateRange([
+      {
+        kind: 'payment' as const,
+        sortDate: '2026-05-30T03:00:00Z',
+        payment: {
+          date: '2026-05-01',
+          createdAt: '2026-05-01T03:00:00Z',
+          voidedAt: '2026-05-30T03:00:00Z'
+        }
+      }
+    ], '2026-05-30', '2026-05-30');
+
+    expect(filtered).toHaveLength(1);
+    expect(getAuditLogEventDate(filtered[0])).toBe('2026-05-30');
+  });
+
   it('compares ISO datetime strings by their date portion', () => {
     expect(isDateInRange('2026-05-30T23:59:59Z', '2026-05-30', '2026-05-30')).toBe(true);
     expect(isDateInRange('2026-05-31T00:00:00Z', '2026-05-30', '2026-05-30')).toBe(false);

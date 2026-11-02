@@ -1566,6 +1566,43 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Every collection has its own durable MLS parent, even before any cost item
+-- is entered. This keeps partial and later balance payments as separate rows.
+CREATE OR REPLACE FUNCTION public.sync_payment_mls_audit_log()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_doctor_id UUID;
+BEGIN
+  SELECT CASE WHEN COUNT(DISTINCT treatment.doctor_id) = 1
+              THEN MIN(treatment.doctor_id::TEXT)::UUID
+              ELSE NULL END
+  INTO v_doctor_id
+  FROM public.treatments treatment
+  WHERE treatment.id = ANY(COALESCE(NEW.treatment_ids, ARRAY[]::UUID[]))
+    AND treatment.doctor_id IS NOT NULL;
+
+  INSERT INTO public.audit_logs (
+    source_type, source_id, location_id, patient_id, doctor_id, payment_id
+  ) VALUES (
+    'payment', NEW.id, NEW.location_id, NEW.patient_id, v_doctor_id, NEW.id
+  )
+  ON CONFLICT (source_type, source_id) DO UPDATE
+  SET location_id = EXCLUDED.location_id,
+      patient_id = EXCLUDED.patient_id,
+      doctor_id = COALESCE(EXCLUDED.doctor_id, public.audit_logs.doctor_id),
+      payment_id = EXCLUDED.payment_id,
+      updated_at = NOW();
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.sync_payment_mls_audit_log() FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION replace_treatment_costs(
   p_audit_log_id UUID, p_items JSONB,
   p_admin_user_id UUID, p_admin_password TEXT, p_request_token UUID
@@ -1970,6 +2007,11 @@ CREATE TRIGGER delete_audit_log_material_expense
 CREATE TRIGGER update_audit_logs_updated_at
     BEFORE UPDATE ON audit_logs
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Trigger: create/update one MLS audit parent per payment
+CREATE TRIGGER sync_payment_mls_audit_log
+    AFTER INSERT OR UPDATE OF location_id, patient_id, treatment_ids ON payments
+    FOR EACH ROW EXECUTE FUNCTION public.sync_payment_mls_audit_log();
 
 -- Trigger: Update patient_material_costs.updated_at
 CREATE TRIGGER update_patient_material_costs_updated_at
