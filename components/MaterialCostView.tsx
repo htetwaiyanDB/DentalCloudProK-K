@@ -31,6 +31,7 @@ type MaterialCostFilter = 'all' | 'tomorrow' | 'today' | 'custom';
 type MaterialCostRow = {
   paymentId: string;
   payment: PaymentRecord | null;
+  treatmentAmount: number;
   collectedAmount: number;
   doctorEarned: number;
   record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] };
@@ -111,6 +112,13 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
       return [{
         paymentId: paymentRow.id,
         payment: paymentRow.payment,
+        // A payment row represents one collection event. Showing the full
+        // treatment production here made the first instalment look like the
+        // entire sale and left later legacy balance collections looking like
+        // zero. Use the amount allocated to treatment for this payment only.
+        treatmentAmount: paymentRow.payment
+          ? paymentRow.appliedToTreatment
+          : getTreatmentAmount(record),
         collectedAmount: paymentRow.totalPaid,
         doctorEarned: paymentRow.doctorEarned,
         record
@@ -191,10 +199,10 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
   // subtracted again.
   const getAssignedSpecialDoctorTotal = (paymentId: string) => Number(materialSummaries[paymentId]?.assignedSpecialDoctorTotal || 0);
 
-  const getTreatmentAmount = (record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) => {
+  function getTreatmentAmount(record: ClinicalRecord & { _groupedRecords?: ClinicalRecord[] }) {
     const groupedRecords = record._groupedRecords?.length ? record._groupedRecords : [record];
     return groupedRecords.reduce((sum, item) => sum + Number(item.cost || 0), 0);
-  };
+  }
 
   const getNetReceive = (paymentId: string, collectedAmount: number) => {
     return Math.max(0, collectedAmount - getMaterialTotal(paymentId));
@@ -330,7 +338,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
     return statusFilteredRows.map((row) => {
       const summary = summaries[row.paymentId];
       const groupedRecords = row.record._groupedRecords?.length ? row.record._groupedRecords : [row.record];
-      const treatmentProduction = groupedRecords.reduce((sum, record) => sum + Number(record.cost || 0), 0);
+      const treatmentProduction = row.treatmentAmount;
       const materialCost = Number(summary?.materialTotal || 0);
       const labCost = Number(summary?.labTotal || 0);
       const specialDoctorCost = Number(summary?.specialDoctorTotal || 0);
@@ -341,7 +349,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
         patientName: row.record.patient_name || 'Unknown',
         clinician: formatDoctorName(row.record.doctor_name),
         treatments: groupedRecords.map((record) => record.description || 'Treatment').join('; '),
-        treatmentProduction,
+        appliedToTreatment: treatmentProduction,
         collectedPayment: row.collectedAmount,
         materialCost,
         labCost,
@@ -590,7 +598,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                 <th className="px-6 py-4 text-left text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Clinician</th>
                 <th className="px-6 py-4 text-left text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Clinical Activity</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Patient Balance</th>
-                <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Treatment Amount</th>
+                <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Applied to Treatment</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Collected Payment</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Material Cost</th>
                 <th className="px-6 py-4 text-right text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Lab Cost</th>
@@ -616,7 +624,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
               ) : (
                 paginatedRows.map((row) => {
                   const record = row.record;
-                  const treatmentAmount = getTreatmentAmount(record);
+                  const treatmentAmount = row.treatmentAmount;
                   const collectedAmount = row.collectedAmount;
                   const netReceive = getNetReceive(row.paymentId, collectedAmount);
                   const adjustedDoctorEarned = row.doctorEarned;
@@ -675,7 +683,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
           ) : (
             paginatedRows.map((row) => {
               const record = row.record;
-              const treatmentAmount = getTreatmentAmount(record);
+              const treatmentAmount = row.treatmentAmount;
               const collectedAmount = row.collectedAmount;
               const adjustedDoctorEarned = row.doctorEarned;
               const netProfit = getNetProfit(row.paymentId, collectedAmount, adjustedDoctorEarned);
@@ -710,7 +718,7 @@ const MaterialCostView: React.FC<MaterialCostViewProps> = ({ records, paymentRec
                         <dd className="mt-1 min-w-0 text-sm font-bold">{renderPatientBalance(record.patient_balance)}</dd>
                       </div>
                       <div className="min-w-0 rounded-xl border border-slate-100 p-3">
-                        <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Treatment amount</dt>
+                        <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Applied to treatment</dt>
                         <dd className="mt-1 break-words text-sm font-black text-slate-900">{formatCurrency(treatmentAmount, currency)}</dd>
                       </div>
                       <div className="min-w-0 rounded-xl border border-blue-100 bg-blue-50 p-3">

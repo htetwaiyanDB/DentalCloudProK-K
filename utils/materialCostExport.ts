@@ -4,7 +4,7 @@ export interface MaterialCostExportRow {
   patientName: string;
   clinician: string;
   treatments: string;
-  treatmentProduction: number;
+  appliedToTreatment: number;
   collectedPayment: number;
   materialCost: number;
   labCost: number;

@@ -547,10 +547,10 @@ export const exportMaterialCostsToPDF = (rows: MaterialCostExportRow[], currency
   doc.text(`Generated: ${new Date().toLocaleString()} | Rows: ${rows.length}`, 14, 25);
   autoTable(doc, {
     startY: 31,
-    head: [['Date', 'Patient ID', 'Patient', 'Clinician', 'Treatments', 'Production', 'Collected', 'Material', 'Lab', 'Special Doctor', 'MLS Total', 'Doctor Earned', 'Net Profit', 'Balance']],
+    head: [['Date', 'Patient ID', 'Patient', 'Clinician', 'Treatments', 'Applied to Treatment', 'Collected', 'Material', 'Lab', 'Special Doctor', 'MLS Total', 'Doctor Earned', 'Net Profit', 'Balance']],
     body: rows.map(row => [
       row.date, row.patientId, row.patientName, row.clinician, row.treatments,
-      formatCurrency(row.treatmentProduction, currency), formatCurrency(row.collectedPayment, currency),
+      formatCurrency(row.appliedToTreatment, currency), formatCurrency(row.collectedPayment, currency),
       formatCurrency(row.materialCost, currency), formatCurrency(row.labCost, currency), formatCurrency(row.specialDoctorCost, currency),
       formatCurrency(row.mlsTotal, currency), formatCurrency(row.doctorEarned, currency), formatCurrency(row.netProfit, currency),
       formatCurrency(row.patientBalance, currency)

@@ -50,6 +50,37 @@ describe('material payment history', () => {
     expect(rows.map((row) => row.treatmentIds)).toEqual([['t1'], ['t1']]);
   });
 
+  it('allocates an old unlinked balance payment to the original treatment as its own row', () => {
+    const rows = buildMaterialPaymentHistoryRows([treatment({ cost: 300_000 })], [
+      payment({
+        id: 'first-payment',
+        amount: 150_000,
+        clearedAmount: 150_000,
+        remainingBalance: 150_000,
+        date: '2026-09-28',
+        createdAt: '2026-09-28T10:00:00Z',
+        receiptNumber: 'REC-FIRST',
+        treatmentIds: ['t1']
+      }),
+      payment({
+        id: 'balance-payment',
+        amount: 150_000,
+        clearedAmount: 150_000,
+        remainingBalance: 0,
+        date: '2026-09-30',
+        createdAt: '2026-09-30T10:00:00Z',
+        receiptNumber: 'REC-BALANCE',
+        treatmentIds: [],
+        receiptSnapshot: null
+      })
+    ]);
+
+    expect(rows.map((row) => row.id)).toEqual(['balance-payment', 'first-payment']);
+    expect(rows.map((row) => row.totalPaid)).toEqual([150_000, 150_000]);
+    expect(rows.map((row) => row.appliedToTreatment)).toEqual([150_000, 150_000]);
+    expect(rows.map((row) => row.treatmentIds)).toEqual([['t1'], ['t1']]);
+  });
+
   it('hides voided collections and keeps them out of treatment allocation', () => {
     const rows = buildMaterialPaymentHistoryRows([treatment()], [
       payment({ id: 'void', voidedAt: '2026-09-01T12:00:00Z', receiptNumber: 'VOID-REC' }),

@@ -352,7 +352,7 @@ export const exportMaterialCostsToExcel = async (rows: MaterialCostExportRow[], 
   const columns: ExcelColumn[] = [
     { header: 'Date', width: 14 }, { header: 'Patient ID', width: 18 }, { header: 'Patient', width: 24 },
     { header: 'Clinician', width: 22 }, { header: 'Treatments', width: 36 },
-    { header: 'Treatment Production', width: 20, format: 'currency' }, { header: 'Collected Payment', width: 20, format: 'currency' },
+    { header: 'Applied to Treatment', width: 20, format: 'currency' }, { header: 'Collected Payment', width: 20, format: 'currency' },
     { header: 'Material Cost', width: 16, format: 'currency' }, { header: 'Lab Cost', width: 16, format: 'currency' },
     { header: 'Special Doctor Cost', width: 20, format: 'currency' }, { header: 'MLS Total', width: 16, format: 'currency' },
     { header: 'Doctor Earned', width: 18, format: 'currency' }, { header: 'Net Profit', width: 18, format: 'currency' },
@@ -360,7 +360,7 @@ export const exportMaterialCostsToExcel = async (rows: MaterialCostExportRow[], 
   ];
   await saveWorkbook(rows.map(row => ({
     Date: row.date, 'Patient ID': row.patientId, Patient: row.patientName, Clinician: row.clinician, Treatments: row.treatments,
-    'Treatment Production': row.treatmentProduction, 'Collected Payment': row.collectedPayment, 'Material Cost': row.materialCost,
+    'Applied to Treatment': row.appliedToTreatment, 'Collected Payment': row.collectedPayment, 'Material Cost': row.materialCost,
     'Lab Cost': row.labCost, 'Special Doctor Cost': row.specialDoctorCost, 'MLS Total': row.mlsTotal,
     'Doctor Earned': row.doctorEarned, 'Net Profit': row.netProfit, 'Patient Balance': row.patientBalance
   })), columns, 'MLS Costs', materialCostExportFilename('xlsx'), currency, { compactHeader: true, freezeHeader: true });
