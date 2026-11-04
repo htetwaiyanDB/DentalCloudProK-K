@@ -26,7 +26,7 @@ const supabaseMock = vi.hoisted(() => {
     throw new Error(`Unexpected table: ${table}`);
   });
   const reportQuery: any = {};
-  for (const method of ['select', 'gte', 'lte', 'order', 'range', 'eq']) reportQuery[method] = vi.fn(() => reportQuery);
+  for (const method of ['select', 'gte', 'lte', 'order', 'range', 'eq', 'contains']) reportQuery[method] = vi.fn(() => reportQuery);
   reportQuery.then = (resolve: any) => Promise.resolve(state.reportPages.shift() || { data: [], error: null }).then(resolve);
   const originalFrom = from.getMockImplementation()!;
   from.mockImplementation((table: string) => table === 'mls_expense_report' ? reportQuery : originalFrom(table));
@@ -90,6 +90,20 @@ describe('api.materialCosts transactional RPC', () => {
     supabaseMock.reportPages.push({ data: null, error: { message: 'relation mls_expense_report does not exist' } });
     await expect(api.materialCosts.getReportCostItems({ dateFrom: '2026-08-01', dateTo: '2026-08-31' })).rejects.toThrow('migration');
     expect(supabaseMock.from).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads doctor dashboard costs by stable doctor ID and expense date, including payment-linked late labs', async () => {
+    supabaseMock.reportPages.push({ data: [{ id: 'late-lab', expense_date: '2026-08-05',
+      cost_type: 'lab', total_amount: '300', patient_id: 'p', patient_name: 'Patient',
+      treatment_label: 'Crown', treatment_date: '2026-07-01', doctor_name: 'Doctor',
+      source_type: 'payment', source_id: 'payment-1', location_id: 'branch-2' }], error: null });
+    const items = await api.materialCosts.getReportCostItems({ doctorId: 'doctor-1',
+      dateFrom: '2026-08-01', dateTo: '2026-08-08' });
+    expect(supabaseMock.reportQuery.contains).toHaveBeenCalledWith('doctor_ids', ['doctor-1']);
+    expect(supabaseMock.reportQuery.gte).toHaveBeenCalledWith('expense_date', '2026-08-01');
+    expect(supabaseMock.reportQuery.lte).toHaveBeenCalledWith('expense_date', '2026-08-08');
+    expect(items).toEqual([expect.objectContaining({ id: 'late-lab', amount: 300,
+      locationId: 'branch-2', sourceType: 'payment', treatmentDate: '2026-07-01' })]);
   });
 
   it('sends categorized items and the logged-in staff identity with its server session token', async () => {

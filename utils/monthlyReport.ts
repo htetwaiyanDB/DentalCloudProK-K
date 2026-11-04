@@ -18,6 +18,7 @@ export interface MonthlyReportSourceRecord extends ClinicalRecord {
 }
 
 export interface MonthlyReportCostItem {
+  locationId?: string;
   id: string;
   expenseDate: string;
   costType: 'material' | 'lab' | 'special_doctor';

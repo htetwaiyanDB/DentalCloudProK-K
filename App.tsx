@@ -4381,7 +4381,8 @@ const App: React.FC = () => {
                   patients={patients}
                   locations={locations}
                   activeLocationIds={currentDoctorLocationIds}
-                  onLoadTreatmentCostSummaries={api.materialCosts.getTotalsByTreatmentIds}
+                  doctorId={session?.doctor_id || ''}
+                  onLoadCostItems={api.materialCosts.getReportCostItems}
                   onSelectPatient={handlePatientSelect}
                   onOpenAppointmentsForDate={handleOpenDoctorAppointmentsForDate}
                 />

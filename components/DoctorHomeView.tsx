@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Users, Activity, CalendarCheck2, TrendingUp, DollarSign, Clock3, Boxes } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { Appointment, ClinicalRecord, Location, Patient, TreatmentCostSummary } from '../types';
+import { Appointment, ClinicalRecord, Location, Patient } from '../types';
+import type { MonthlyReportCostItem } from '../utils/monthlyReport';
 import {
   buildDoctorDashboardRangeSummary,
   createDoctorDashboardRange,
@@ -16,7 +17,8 @@ interface DoctorHomeViewProps {
   patients: Patient[];
   locations: Location[];
   activeLocationIds?: string[];
-  onLoadTreatmentCostSummaries: (treatmentIds: string[]) => Promise<Record<string, TreatmentCostSummary>>;
+  doctorId: string;
+  onLoadCostItems: (query: { doctorId: string; dateFrom: string; dateTo: string }) => Promise<MonthlyReportCostItem[]>;
   onSelectPatient: (patient: Patient) => void;
   onOpenAppointmentsForDate: (filter: 'today' | 'tomorrow') => void;
 }
@@ -27,12 +29,13 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
   patients,
   locations,
   activeLocationIds = [],
-  onLoadTreatmentCostSummaries,
+  doctorId,
+  onLoadCostItems,
   onSelectPatient,
   onOpenAppointmentsForDate
 }) => {
   const [reportRange, setReportRange] = useState(() => createDoctorDashboardRange('month'));
-  const [rangeCostSummaries, setRangeCostSummaries] = useState<Record<string, TreatmentCostSummary>>({});
+  const [rangeCostItems, setRangeCostItems] = useState<MonthlyReportCostItem[]>([]);
   const [rangeCostsLoading, setRangeCostsLoading] = useState(false);
   const [rangeCostsError, setRangeCostsError] = useState(false);
   const toLocalISODate = (date: Date) => {
@@ -53,31 +56,29 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
     () => buildDoctorDashboardRangeSummary(appointments, treatmentRecords, reportRange),
     [appointments, treatmentRecords, reportRange]
   );
-  const rangeTreatmentIds = useMemo(
-    () => rangeSummary.treatments.map((record) => record.id).filter(Boolean),
-    [rangeSummary.treatments]
-  );
-  const rangeTreatmentIdsKey = rangeTreatmentIds.join('|');
+  const costDateFrom = validReportRange?.startDateKey;
+  const costDateTo = validReportRange?.endDateKey;
 
   useEffect(() => {
     let cancelled = false;
-    if (rangeTreatmentIds.length === 0) {
-      setRangeCostSummaries({});
+    if (!costDateFrom || !costDateTo || !doctorId) {
+      setRangeCostItems([]);
       setRangeCostsLoading(false);
       setRangeCostsError(false);
       return () => { cancelled = true; };
     }
 
     setRangeCostsLoading(true);
+    setRangeCostItems([]);
     setRangeCostsError(false);
-    void onLoadTreatmentCostSummaries(rangeTreatmentIds)
-      .then((summaries) => {
-        if (!cancelled) setRangeCostSummaries(summaries);
+    void onLoadCostItems({ doctorId, dateFrom: costDateFrom, dateTo: costDateTo })
+      .then((items) => {
+        if (!cancelled) setRangeCostItems(items);
       })
       .catch((error) => {
         console.warn('Unable to load doctor dashboard MLS costs:', error);
         if (!cancelled) {
-          setRangeCostSummaries({});
+          setRangeCostItems([]);
           setRangeCostsError(true);
         }
       })
@@ -86,7 +87,7 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
       });
 
     return () => { cancelled = true; };
-  }, [rangeTreatmentIdsKey, onLoadTreatmentCostSummaries]);
+  }, [costDateFrom, costDateTo, doctorId, onLoadCostItems, treatmentRecords]);
   const rangeCaption = useMemo(() => {
     if (!validReportRange) return 'Enter a valid start and end date-time.';
     const format = (date: Date) => date.toLocaleString([], {
@@ -167,16 +168,16 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
 
   const rangeMlsCostsByBranch = useMemo(() => {
     return buildBranchTotals(
-      rangeSummary.treatments,
-      (record) => Number(rangeCostSummaries[record.id]?.totalAmount || 0),
+      rangeCostItems.map(item => ({ location_id: item.locationId, amount: item.amount })),
+      (item) => item.amount,
       visibleBranchIds
     );
-  }, [rangeSummary.treatments, rangeCostSummaries, branchNameById, visibleBranchIds]);
+  }, [rangeCostItems, branchNameById, visibleBranchIds]);
 
-  const rangeMlsCost = useMemo(() => rangeSummary.treatments.reduce(
-    (sum, record) => sum + Number(rangeCostSummaries[record.id]?.totalAmount || 0),
+  const rangeMlsCost = useMemo(() => rangeCostItems.reduce(
+    (sum, item) => sum + item.amount,
     0
-  ), [rangeSummary.treatments, rangeCostSummaries]);
+  ), [rangeCostItems]);
 
   const todayAppointmentsByBranch = useMemo(() => {
     return buildBranchTotals(
@@ -332,8 +333,9 @@ const DoctorHomeView: React.FC<DoctorHomeViewProps> = ({
             <p className="text-[11px] font-semibold uppercase tracking-wide">Total MLS Cost</p>
           </div>
           <p className="text-2xl font-bold text-gray-900">
-            {rangeCostsLoading ? 'Loading...' : `${rangeMlsCost.toLocaleString()} MMK`}
+            {rangeCostsLoading ? 'Loading...' : rangeCostsError ? 'Unavailable' : `${rangeMlsCost.toLocaleString()} MMK`}
           </p>
+          <p className="mt-1 text-[11px] text-gray-500">By expense date (whole days), including payment-linked costs. Shared-payment costs appear once per involved doctor; do not sum doctor dashboards.</p>
           {rangeCostsError ? (
             <p className="mt-3 border-t border-gray-100 pt-2 text-[11px] font-semibold text-red-500">Unable to load MLS costs.</p>
           ) : renderBranchBreakdown(rangeMlsCostsByBranch, (value) => `${value.toLocaleString()} MMK`, 'No MLS costs in this range.')}

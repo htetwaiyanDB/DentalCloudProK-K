@@ -38,6 +38,18 @@ unchanged: saving MLS still schedules the existing commission recalculation.
 
 ## Database rollout
 
+For the Doctor Dashboard MLS fix, also apply
+`20261104010000_doctor_dashboard_mls_scope.sql` after the expense-date migration
+and before deploying the application. It appends stable clinician IDs to the
+existing security-invoker report view without changing cost amounts or commission.
+The dashboard loads both payment- and treatment-linked costs by expense date
+(whole boundary days), including late bills for older treatments. Branch totals
+use the cost source's branch. A shared payment's cost appears once for each
+involved clinician; these dashboard totals must not be summed across clinicians.
+This is an associated-cost display, not a new allocation or commission deduction.
+Professional Reporting retains one ledger row per cost and its combined clinician
+group for shared payments. Failed cost queries show Unavailable rather than zero.
+
 Apply `20261104000000_mls_expense_dates.sql` before releasing the new application.
 It is transactional, uses bounded lock/statement timeouts, and backfills existing
 items using their original payment or treatment date. It deliberately does not

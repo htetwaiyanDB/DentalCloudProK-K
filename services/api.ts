@@ -3237,8 +3237,8 @@ export const api = {
   },
 
   materialCosts: {
-    getReportCostItems: async ({ locationId, dateFrom, dateTo }: {
-      locationId?: string; dateFrom: string; dateTo: string;
+    getReportCostItems: async ({ locationId, doctorId, dateFrom, dateTo }: {
+      locationId?: string; doctorId?: string; dateFrom: string; dateTo: string;
     }): Promise<MonthlyReportCostItem[]> => {
       const fromDate = normalizeExpenseDate(dateFrom);
       const toDate = normalizeExpenseDate(dateTo);
@@ -3249,11 +3249,12 @@ export const api = {
           .gte('expense_date', fromDate).lte('expense_date', toDate)
           .order('expense_date', { ascending: true }).order('id', { ascending: true }).range(from, to);
         if (locationId) query = query.eq('location_id', locationId);
+        if (doctorId) query = query.contains('doctor_ids', [doctorId]);
         return query;
       });
       if (error) throw new Error(`Unable to load MLS expense report. Ensure the latest MLS expense-date migration is installed. ${error.message}`);
       return (data || []).map((row) => ({
-        id: row.id, expenseDate: row.expense_date, costType: row.cost_type,
+        id: row.id, locationId: row.location_id, expenseDate: row.expense_date, costType: row.cost_type,
         amount: Number(row.total_amount), patientId: row.patient_id || '',
         patientName: row.patient_name || '', treatmentLabel: row.treatment_label || '',
         treatmentDate: row.treatment_date || '', doctorName: row.doctor_name || '',
