@@ -20,6 +20,18 @@ payment records are not duplicated. Generated Material/Lab expenses are excluded
 from operating expenses to prevent counting them twice. Special Doctor costs
 remain MLS-only, matching the existing expense-generation policy.
 
+Excel Treatment Detail includes expense-period MLS on the matching treatment
+visit (same-patient, same-day treatments remain grouped). Treatment-linked costs
+match by treatment ID; payment-linked costs match only an unambiguous original
+patient/date/treatment visit. Costs with no matching displayed visit, including
+late bills for older treatments, appear as cost-only MLS adjustment rows with
+their expense date and original treatment date. These rows do not add production,
+payments, patients, or treatments. Unassigned revenue and operating expenses have
+separate reconciliation rows, so REPORT TOTAL revenue, MLS, total cost, net profit,
+and net margin agree with the Executive Summary. The MLS Expenses sheet is a
+reference ledger of those same costs, not an additional expense to add again.
+PDF treatment detail continues to show pre-MLS contribution with a separate ledger.
+
 The MLS overview and lifetime cost totals still describe the original activity;
 they are not an expense-date ledger. Doctor commission calculation rules are
 unchanged: saving MLS still schedules the existing commission recalculation.

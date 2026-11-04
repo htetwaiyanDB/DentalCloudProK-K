@@ -421,6 +421,56 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
     row.standardCost, row.discount, row.cost, row.payment, row.balance, row.serviceCharges, row.medicineSales, row.totalRevenue,
     row.materialCost, row.labCost, row.specialDoctorCost, row.mlsTotal, row.doctorCost, row.totalCost, row.netProfit, row.netMargin
   ]);
+  if (report.costItems !== undefined) {
+    const round = (value: number) => Math.round(value * 100) / 100;
+    const adjustment = (label: string): Array<string | number> => [label, ...Array(8).fill(''), ...Array(16).fill(0)];
+    for (const item of report.costItems) {
+      // Treatment sources have a stable ID. Payment sources have only original
+      // visit metadata, so attach only when that identifies one displayed visit.
+      const candidates = groupedDetailRows.flatMap((row, index) => {
+        const matches = item.sourceType === 'treatment'
+          ? row.treatmentIds.includes(item.sourceId)
+          : row.patientId === item.patientId && row.date === item.treatmentDate
+            && report.rows.some(original => row.treatmentIds.includes(original.treatmentId)
+              && original.treatment === item.treatmentLabel);
+        return matches ? [index] : [];
+      });
+      let target: Array<string | number>;
+      if (candidates.length === 1) {
+        target = detailData[candidates[0]];
+      } else {
+        target = adjustment('MLS ADJUSTMENT (no treatment counted)');
+        target[0] = item.expenseDate;
+        target[1] = item.patientName;
+        target[6] = item.patientType;
+        target[7] = `MLS adjustment: ${item.treatmentLabel} (original ${item.treatmentDate})`;
+        target[8] = item.doctorName;
+        detailData.push(target);
+      }
+      const column = item.costType === 'material' ? 17 : item.costType === 'lab' ? 18 : 19;
+      target[column] = round(Number(target[column]) + item.amount);
+      target[20] = round(Number(target[20]) + item.amount);
+      target[22] = round(Number(target[22]) + item.amount);
+      target[23] = round(Number(target[16]) - Number(target[22]));
+      target[24] = Number(target[16]) > 0 ? Number(target[23]) / Number(target[16]) : 0;
+    }
+    const service = round(report.summary.serviceCharges - report.rows.reduce((sum, row) => sum + row.serviceCharges, 0));
+    const medicine = round(report.summary.medicineSales - report.rows.reduce((sum, row) => sum + row.medicineSales, 0));
+    if (service !== 0 || medicine !== 0) {
+      const row = adjustment('UNASSIGNED REVENUE (no treatment counted)');
+      row[14] = service;
+      row[15] = medicine;
+      row[16] = row[23] = round(service + medicine);
+      row[24] = Number(row[16]) > 0 ? 1 : 0;
+      detailData.push(row);
+    }
+    if (report.summary.operatingExpenses !== 0) {
+      const row = adjustment('OPERATING EXPENSES (no treatment counted)');
+      row[22] = report.summary.operatingExpenses;
+      row[23] = -report.summary.operatingExpenses;
+      detailData.push(row);
+    }
+  }
   const detailRows: Array<Array<string | number>> = [
     ['TREATMENT DETAIL', ...Array(24).fill('')],
     [reportSubtitle(metadata), ...Array(24).fill('')],
@@ -435,23 +485,17 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   const detailSheet: any = XLSX.utils.aoa_to_sheet(detailRows);
   if (report.costItems !== undefined) {
     const totalRow = 5 + detailData.length;
-    detailSheet.W4.v = 'Direct Cost (excludes dated MLS)';
-    detailSheet.X4.v = 'Contribution (pre-MLS)';
-    detailSheet.Y4.v = 'Margin (pre-MLS)';
-    detailSheet.A2.v += ' | Detail is pre-MLS. Summary includes dated MLS, unassigned revenue and operating expenses.';
-    // Every numeric subtotal must sum displayed rows, not the report summary
-    // (which can also contain revenue unassigned to any treatment).
+    detailSheet.W4.v = 'Total Cost (incl. operating expenses)';
+    detailSheet.X4.v = 'Net Profit';
+    detailSheet.Y4.v = 'Net Margin';
+    detailSheet.A2.v += ' | Expense-period MLS included once. Adjustment rows do not count as treatments; see MLS Expenses for source dates.';
+    // Sum all displayed activity and reconciliation rows, never duplicate ledger costs.
     for (let column = 9; column <= 23; column += 1) {
       detailSheet[XLSX.utils.encode_cell({ r: totalRow - 1, c: column })].v =
         Math.round(detailData.reduce((sum, row) => sum + Number(row[column]), 0) * 100) / 100;
     }
-    const sum = (field: 'materialCost' | 'labCost' | 'specialDoctorCost' | 'mlsTotal' | 'totalCost' | 'netProfit') =>
-      Math.round(report.rows.reduce((total, row) => total + row[field], 0) * 100) / 100;
-    detailSheet[`A${totalRow}`].v = 'TREATMENT TOTAL (excludes dated MLS)';
-    for (const [column, field] of [['R', 'materialCost'], ['S', 'labCost'], ['T', 'specialDoctorCost'],
-      ['U', 'mlsTotal'], ['W', 'totalCost'], ['X', 'netProfit']] as const) detailSheet[`${column}${totalRow}`].v = sum(field);
-    const revenue = report.rows.reduce((total, row) => total + row.totalRevenue, 0);
-    detailSheet[`Y${totalRow}`].v = revenue > 0 ? sum('netProfit') / revenue : 0;
+    const revenue = Number(detailSheet[`Q${totalRow}`].v);
+    detailSheet[`Y${totalRow}`].v = revenue > 0 ? Number(detailSheet[`X${totalRow}`].v) / revenue : 0;
   }
   detailSheet['!merges'] = [XLSX.utils.decode_range('A1:Y1'), XLSX.utils.decode_range('A2:Y2')];
   configureTableSheet(detailSheet, 4, detailData.length, 'Y', [15, 25, 8, 18, 18, 18, 18, 32, 24, 18, 16, 20, 19, 20, 17, 17, 18, 16, 16, 18, 16, 16, 16, 16, 14]);
@@ -459,7 +503,7 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   setNumberFormat(XLSX, detailSheet, 5, 5 + detailData.length, [24], '0.0%');
   styleReportBanner(XLSX, detailSheet, 'Y');
   styleTable(XLSX, detailSheet, 4, detailData.length, 5 + detailData.length, 'Y', [2, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24], [2]);
-  groupedDetailRows.forEach((row, index) => styleProfitCell(detailSheet, `X${5 + index}`, row.netProfit));
+  detailData.forEach((row, index) => styleProfitCell(detailSheet, `X${5 + index}`, Number(row[23])));
   styleProfitCell(detailSheet, `X${5 + detailData.length}`, Number(detailSheet[`X${5 + detailData.length}`].v), true);
   XLSX.utils.book_append_sheet(workbook, detailSheet, 'Treatment Detail');
 
@@ -468,7 +512,7 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
       item.treatmentLabel, item.doctorName, item.patientType, item.costType, item.amount, item.sourceType, item.sourceId, item.id]);
     const sheet: any = XLSX.utils.aoa_to_sheet([
       ['MLS EXPENSES — included once in summary and performance groups'],
-      ['Expense-period costs; excluded from treatment detail totals and treatment counts.'], [],
+      ['Reference ledger: already included in Treatment Detail and summary. Do not add again; no additional treatments.'], [],
       ['Expense Date', 'Original Treatment Date', 'Patient Name', 'Treatment', 'Clinician', 'Patient Type', 'Cost Type', 'Amount', 'Source Type', 'Source ID', 'Cost ID'],
       ...costData, ['MLS TOTAL', '', '', '', '', '', '', report.summary.mlsTotal]
     ]);

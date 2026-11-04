@@ -41,17 +41,19 @@ const report: MonthlyReport = {
 };
 
 describe('monthly report Excel workbook', () => {
-  it('labels pre-MLS detail contributions and totals only displayed rows, excluding unassigned revenue', async () => {
+  it('reconciles unassigned revenue with the executive summary without adding treatments', async () => {
     const dated = buildMonthlyReport({ records: [], payments: [], costSummaries: {}, costItems: [],
       medicineSales: [{ id: 'sale', location_id: 'loc', patient_id: 'p', medicine_id: 'm', quantity: 1,
         unit_price: 50, total_price: 50, date: '2026-07-10' }] });
     const workbook = await buildMonthlyReportExcelWorkbook(dated, metadata);
     const detail = workbook.Sheets['Treatment Detail'];
-    expect(detail.X4.v).toBe('Contribution (pre-MLS)');
-    expect(detail.W4.v).toBe('Direct Cost (excludes dated MLS)');
-    expect(detail.Q5.v).toBe(0);
-    expect(detail.P5.v).toBe(0);
-    expect(detail.X5.v).toBe(0);
+    expect(detail.X4.v).toBe('Net Profit');
+    expect(detail.W4.v).toBe('Total Cost (incl. operating expenses)');
+    expect(detail.A5.v).toBe('UNASSIGNED REVENUE (no treatment counted)');
+    expect(detail.Q5.v).toBe(50);
+    expect(detail.P5.v).toBe(50);
+    expect(detail.X6.v).toBe(50);
+    expect(dated.summary.treatmentCount).toBe(0);
     expect(dated.summary.totalRevenue).toBe(50);
     vi.mocked(autoTable).mockClear();
     exportMonthlyReportToPDF(dated, metadata);
@@ -74,7 +76,7 @@ describe('monthly report Excel workbook', () => {
     expect(table?.foot?.[0]).toContain('30Ks');
   });
 
-  it('exports independent dated MLS with reconciled cost totals, not treatment detail costs', async () => {
+  it('exports older-treatment MLS as a cost-only adjustment without duplicating treatments', async () => {
     const datedReport = buildMonthlyReport({ records: [], payments: [], costSummaries: {}, costItems: [{
       id: 'cost-1', expenseDate: '2026-07-15', treatmentDate: '2026-06-10', costType: 'lab', amount: 30,
       patientId: 'patient-1', patientName: 'Aye Aye', treatmentLabel: 'Crown', doctorName: 'Doctor One',
@@ -89,10 +91,60 @@ describe('monthly report Excel workbook', () => {
     expect(costs.B5.v).toBe('2026-06-10');
     expect(costs.H5.v).toBe(30);
     expect(costs.H6.v).toBe(30);
-    expect(workbook.Sheets['Treatment Detail'].U5.v).toBe(0);
-    expect(workbook.Sheets['Treatment Detail'].W5.v).toBe(0);
+    const detail = workbook.Sheets['Treatment Detail'];
+    expect(detail.H5.v).toContain('MLS adjustment: Crown (original 2026-06-10)');
+    expect(detail.L5.v).toBe(0);
+    expect(detail.U5.v).toBe(30);
+    expect(detail.W5.v).toBe(30);
+    expect(detail.X6.v).toBe(-30);
     expect(workbook.Sheets['By Treatment'].J5.v).toBe(30);
     expect(workbook.Sheets['By Treatment'].B5.v).toBe(0);
+  });
+
+  it('attaches dated MLS to grouped treatments and reconciles costs, revenue and net profit after XLSX round trip', async () => {
+    const base = { patientId: 'patient-1', patientName: 'Aye Aye', treatmentLabel: 'Crown',
+      treatmentDate: '2026-07-10', doctorName: 'Doctor One', patientType: 'Walk-in',
+      sourceType: 'treatment' as const, sourceId: 'treatment-1' };
+    const dated = buildMonthlyReport({
+      records: [
+        { id: 'treatment-1', location_id: 'loc', patient_id: 'patient-1', patient_name: 'Aye Aye',
+          doctor_name: 'Doctor One', teeth: [], description: 'Crown', cost: 100, doctorEarnings: 20, date: '2026-07-10' },
+        { id: 'treatment-2', location_id: 'loc', patient_id: 'patient-1', patient_name: 'Aye Aye',
+          doctor_name: 'Doctor Two', teeth: [], description: 'Filling', cost: 50, doctorEarnings: 10, date: '2026-07-10' }
+      ], payments: [], costSummaries: {}, dateFrom: metadata.dateFrom, dateTo: metadata.dateTo,
+      costItems: [
+        { ...base, id: 'm', expenseDate: '2026-07-01', costType: 'material', amount: 10 },
+        { ...base, id: 'l', sourceType: 'payment', sourceId: 'payment-1', expenseDate: '2026-07-31', costType: 'lab', amount: 15 },
+        { ...base, id: 's', expenseDate: '2026-07-15', costType: 'special_doctor', amount: 5 },
+        { ...base, id: 'old', sourceId: 'old-treatment', treatmentDate: '2026-06-10', expenseDate: '2026-07-15', costType: 'lab', amount: 7 },
+        { ...base, id: 'outside', expenseDate: '2026-08-01', costType: 'lab', amount: 999 }
+      ],
+      medicineSales: [{ id: 'sale', location_id: 'loc', patient_id: 'other', medicine_id: 'm',
+        quantity: 1, unit_price: 12, total_price: 12, date: '2026-07-10' }],
+      expenses: [{ id: 'expense', location_id: 'loc', date: '2026-07-10', category: 'Rent', description: 'Rent', amount: 9 }]
+    });
+    const before = structuredClone(dated);
+    const workbook = await buildMonthlyReportExcelWorkbook(dated, metadata);
+    const reopened = XLSX.read(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }), { type: 'buffer' });
+    const detail = reopened.Sheets['Treatment Detail'];
+    expect(detail.H5.v).toBe('Crown; Filling');
+    expect(detail.R5.v).toBe(10);
+    expect(detail.S5.v).toBe(15);
+    expect(detail.T5.v).toBe(5);
+    expect(detail.U5.v).toBe(30);
+    expect(detail.W5.v).toBe(60);
+    expect(detail.X5.v).toBe(90);
+    expect(detail.Y5.v).toBe(0.6);
+    expect(detail.H6.v).toContain('MLS adjustment');
+    expect(detail.A7.v).toContain('UNASSIGNED REVENUE');
+    expect(detail.A8.v).toContain('OPERATING EXPENSES');
+    expect(detail.A9.v).toBe('REPORT TOTAL');
+    for (const [column, field] of [['Q', 'totalRevenue'], ['U', 'mlsTotal'], ['W', 'totalCost'],
+      ['X', 'netProfit'], ['Y', 'netMargin']] as const) {
+      expect(detail[`${column}9`].v).toBeCloseTo(dated.summary[field]);
+    }
+    expect(dated).toEqual(before);
+    expect(dated.summary.treatmentCount).toBe(2);
   });
 
   it('builds a structured, readable workbook with professional report sections', async () => {
