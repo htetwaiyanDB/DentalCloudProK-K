@@ -2,6 +2,8 @@ import type { MaterialLabCostPreset, MaterialLabCostPresetInput, TreatmentCostTy
 
 export interface MaterialCostDraftRow {
   localId: string;
+  id?: string;
+  expenseDate?: string;
   materialName: string;
   costType: TreatmentCostType;
   costAmount: number;

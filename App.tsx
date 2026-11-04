@@ -4421,7 +4421,7 @@ const App: React.FC = () => {
                     });
                     onProgress({ percent: 45, label: 'Treatment history loaded' });
                     const patientIds = Array.from(new Set(records.map(record => record.patient_id).filter(Boolean)));
-                    const [payments, costSummaries, reportAppointments, medicineSales, reportExpenses] = await Promise.all([
+                    const [payments, costItems, reportAppointments, medicineSales, reportExpenses] = await Promise.all([
                       api.finance.getMonthlyReportPayments({
                         locationId: queryLocationId,
                         dateFrom,
@@ -4432,22 +4432,11 @@ const App: React.FC = () => {
                           label: `Loading payments ${completed}/${total}…`
                         })
                       }),
-                      api.materialCosts.getTotalsByTreatmentIds(records.map(record => record.id), {
-                        requireCostTables: true,
-                        onProgress: (completed, total) => onProgress({
-                          percent: 45 + Math.round((completed / Math.max(total, 1)) * 38),
-                          label: `Loading treatment costs ${completed}/${total}…`
-                        })
-                      }),
+                      api.materialCosts.getReportCostItems({ locationId: queryLocationId, dateFrom, dateTo }),
                       api.appointments.getAll(queryLocationId, { dateFrom, dateTo, throwOnError: true }),
                       api.medicines.getSales(queryLocationId, undefined, { dateFrom, dateTo, throwOnError: true }),
                       api.expenses.getAll(queryLocationId, { dateFrom, dateTo, throwOnError: true })
                     ]);
-                    onProgress({ percent: 86, label: 'Loading payment-linked MLS costs…' });
-                    const paymentCostSummaries = await api.materialCosts.getTotalsByPaymentIds(
-                      payments.map((payment) => payment.id),
-                      { idBatchSize: 50 }
-                    );
                     onProgress({ percent: 90, label: 'Calculating balances and profit…' });
                     const { buildMonthlyReport } = await import('./utils/monthlyReport');
                     const operatingExpenses = reportExpenses.filter((expense) => {
@@ -4459,8 +4448,8 @@ const App: React.FC = () => {
                       records,
                       allocationRecords,
                       payments,
-                      costSummaries,
-                      paymentCostSummaries,
+                      costSummaries: {},
+                      costItems,
                       dateFrom,
                       dateTo,
                       appointments: reportAppointments,

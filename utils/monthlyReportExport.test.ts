@@ -1,7 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx-js-style';
-import type { MonthlyReport, MonthlyReportMetadata } from './monthlyReport';
-import { buildMonthlyReportExcelWorkbook } from './monthlyReportExport';
+import { buildMonthlyReport, type MonthlyReport, type MonthlyReportMetadata } from './monthlyReport';
+import { buildMonthlyReportExcelWorkbook, exportMonthlyReportToPDF } from './monthlyReportExport';
+
+vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
+vi.mock('jspdf', async importOriginal => {
+  const actual = await importOriginal<typeof import('jspdf')>();
+  return { ...actual, default: class extends actual.default {
+    constructor(options?: ConstructorParameters<typeof actual.default>[0]) { super(options); this.save = vi.fn() as any; }
+  } };
+});
 
 const metadata: MonthlyReportMetadata = {
   dateFrom: '2026-07-01',
@@ -32,6 +41,60 @@ const report: MonthlyReport = {
 };
 
 describe('monthly report Excel workbook', () => {
+  it('labels pre-MLS detail contributions and totals only displayed rows, excluding unassigned revenue', async () => {
+    const dated = buildMonthlyReport({ records: [], payments: [], costSummaries: {}, costItems: [],
+      medicineSales: [{ id: 'sale', location_id: 'loc', patient_id: 'p', medicine_id: 'm', quantity: 1,
+        unit_price: 50, total_price: 50, date: '2026-07-10' }] });
+    const workbook = await buildMonthlyReportExcelWorkbook(dated, metadata);
+    const detail = workbook.Sheets['Treatment Detail'];
+    expect(detail.X4.v).toBe('Contribution (pre-MLS)');
+    expect(detail.W4.v).toBe('Direct Cost (excludes dated MLS)');
+    expect(detail.Q5.v).toBe(0);
+    expect(detail.P5.v).toBe(0);
+    expect(detail.X5.v).toBe(0);
+    expect(dated.summary.totalRevenue).toBe(50);
+    vi.mocked(autoTable).mockClear();
+    exportMonthlyReportToPDF(dated, metadata);
+    expect(vi.mocked(autoTable).mock.calls[0][1].head?.[0]).toContain('Contribution (pre-MLS)');
+  });
+
+  it('exports PDF costs with both dates and an explicit non-duplicating cost section', () => {
+    const datedReport = buildMonthlyReport({ records: [], payments: [], costSummaries: {}, costItems: [{
+      id: 'cost-1', expenseDate: '2026-07-15', treatmentDate: '2026-06-10', costType: 'lab', amount: 30,
+      patientId: 'patient-1', patientName: 'Aye Aye', treatmentLabel: 'Crown', doctorName: 'Doctor One',
+      patientType: 'Walk-in', sourceType: 'payment', sourceId: 'payment-1'
+    }] });
+    vi.mocked(autoTable).mockClear();
+    exportMonthlyReportToPDF(datedReport, metadata);
+    const table = vi.mocked(autoTable).mock.calls.map(call => call[1]).find(options =>
+      options.head?.[0]?.[0] === 'Expense Date');
+    expect(table).toBeDefined();
+    expect(table?.head?.[0]).toContain('Original Treatment Date');
+    expect(table?.body?.[0]).toEqual(expect.arrayContaining(['2026-07-15', '2026-06-10', 'Crown', 'lab', '30Ks']));
+    expect(table?.foot?.[0]).toContain('30Ks');
+  });
+
+  it('exports independent dated MLS with reconciled cost totals, not treatment detail costs', async () => {
+    const datedReport = buildMonthlyReport({ records: [], payments: [], costSummaries: {}, costItems: [{
+      id: 'cost-1', expenseDate: '2026-07-15', treatmentDate: '2026-06-10', costType: 'lab', amount: 30,
+      patientId: 'patient-1', patientName: 'Aye Aye', treatmentLabel: 'Crown', doctorName: 'Doctor One',
+      patientType: 'Walk-in', sourceType: 'payment', sourceId: 'payment-1'
+    }] });
+    const workbook = await buildMonthlyReportExcelWorkbook(datedReport, metadata);
+    const costs = workbook.Sheets['MLS Expenses'];
+    expect(costs).toBeDefined();
+    expect(costs.A4.v).toBe('Expense Date');
+    expect(costs.B4.v).toBe('Original Treatment Date');
+    expect(costs.A5.v).toBe('2026-07-15');
+    expect(costs.B5.v).toBe('2026-06-10');
+    expect(costs.H5.v).toBe(30);
+    expect(costs.H6.v).toBe(30);
+    expect(workbook.Sheets['Treatment Detail'].U5.v).toBe(0);
+    expect(workbook.Sheets['Treatment Detail'].W5.v).toBe(0);
+    expect(workbook.Sheets['By Treatment'].J5.v).toBe(30);
+    expect(workbook.Sheets['By Treatment'].B5.v).toBe(0);
+  });
+
   it('builds a structured, readable workbook with professional report sections', async () => {
     const workbook = await buildMonthlyReportExcelWorkbook(report, metadata);
 

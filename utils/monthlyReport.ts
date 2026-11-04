@@ -17,7 +17,23 @@ export interface MonthlyReportSourceRecord extends ClinicalRecord {
   patient_balance?: number | null;
 }
 
+export interface MonthlyReportCostItem {
+  id: string;
+  expenseDate: string;
+  costType: 'material' | 'lab' | 'special_doctor';
+  amount: number;
+  patientId: string;
+  patientName: string;
+  treatmentLabel: string;
+  treatmentDate: string;
+  doctorName: string;
+  patientType: string;
+  sourceType: 'treatment' | 'payment';
+  sourceId: string;
+}
+
 export interface MonthlyReportData {
+  costItems?: MonthlyReportCostItem[];
   records: MonthlyReportSourceRecord[];
   allocationRecords?: MonthlyReportSourceRecord[];
   payments: PaymentRecord[];
@@ -105,6 +121,7 @@ export interface MonthlyReportGroup {
 }
 
 export interface MonthlyReport {
+  costItems?: MonthlyReportCostItem[];
   rows: MonthlyReportRow[];
   summary: MonthlyReportSummary;
   byTreatment: MonthlyReportGroup[];
@@ -431,6 +448,38 @@ const appendUnassignedRevenueGroups = (
 };
 
 export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
+  // An explicitly empty ledger is authoritative too. Never allocate these costs
+  // through treatments: their expense period can differ from production.
+  if (data.costItems !== undefined) {
+    const report = buildMonthlyReport({ ...data, costItems: undefined, costSummaries: {}, paymentCostSummaries: {} });
+    report.costItems = data.costItems.filter(item => isValidLocalDate(item.expenseDate)
+      && (!data.dateFrom || item.expenseDate >= data.dateFrom)
+      && (!data.dateTo || item.expenseDate <= data.dateTo))
+      .map(item => ({ ...item, amount: positiveMoney(item.amount) }));
+    for (const item of report.costItems) {
+      const field = item.costType === 'material' ? 'materialCost' : item.costType === 'lab' ? 'labCost' : 'specialDoctorCost';
+      report.summary[field] = money(report.summary[field] + item.amount);
+      report.summary.mlsTotal = money(report.summary.mlsTotal + item.amount);
+      report.summary.totalCost = money(report.summary.totalCost + item.amount);
+      for (const [groups, label] of [[report.byTreatment, item.treatmentLabel], [report.byDoctor, item.doctorName],
+        [report.byPatientType, item.patientType]] as [MonthlyReportGroup[], string][]) {
+        const name = label.trim() || 'Not recorded';
+        let group = groups.find(candidate => candidate.name === name);
+        if (!group) {
+          group = { name, treatments: 0, patients: 0, discount: 0, production: 0, payment: 0,
+            serviceCharges: 0, medicineSales: 0, totalRevenue: 0, mlsTotal: 0, totalCost: 0, netProfit: 0, netMargin: 0 };
+          groups.push(group);
+        }
+        group.mlsTotal = money(group.mlsTotal + item.amount);
+        group.totalCost = money(group.totalCost + item.amount);
+        group.netProfit = money(group.totalRevenue - group.totalCost);
+        group.netMargin = group.totalRevenue > 0 ? group.netProfit / group.totalRevenue : 0;
+      }
+    }
+    report.summary.netProfit = money(report.summary.totalRevenue - report.summary.totalCost);
+    report.summary.netMargin = report.summary.totalRevenue > 0 ? report.summary.netProfit / report.summary.totalRevenue : 0;
+    return report;
+  }
   const paymentByTreatment = buildPaymentByTreatment(data.allocationRecords || data.records, data.payments);
   const paymentCostsByTreatment = allocatePaymentCostsByTreatment(
     data.allocationRecords || data.records,

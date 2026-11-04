@@ -123,6 +123,7 @@ export type TreatmentCostType = 'material' | 'lab' | 'special_doctor';
 
 export interface PatientMaterialCost {
   id: string;
+  expenseDate?: string;
   auditLogId: string;
   materialName: string;
   costType: TreatmentCostType;
@@ -137,6 +138,8 @@ export interface PatientMaterialCost {
 }
 
 export interface PatientMaterialCostInput {
+  id?: string;
+  expenseDate?: string;
   materialName: string;
   costType: TreatmentCostType;
   costAmount: number;

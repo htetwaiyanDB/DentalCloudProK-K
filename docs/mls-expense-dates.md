@@ -1,0 +1,48 @@
+# MLS expense dates
+
+## Staff workflow
+
+Each Material, Lab, or Special Doctor item has an **Expense Date**. New items
+default to the browser's local date; choose the actual date for the clinic's
+reporting policy. This date is independent of the original treatment and patient
+payment dates, and does not represent a separate payment to a supplier.
+
+Existing items retain their dates when reopened, saved, or edited. To correct an
+already-entered late lab cost, open its original MLS record and change only that
+item's Expense Date. Do not create another treatment, payment, or manual expense.
+
+## Reporting
+
+Professional Reporting loads MLS items by their Expense Date and selected branch,
+including items attached to treatments/payments outside the selected period.
+The PDF and Excel exports include a separate MLS expense ledger. Treatment and
+payment records are not duplicated. Generated Material/Lab expenses are excluded
+from operating expenses to prevent counting them twice. Special Doctor costs
+remain MLS-only, matching the existing expense-generation policy.
+
+The MLS overview and lifetime cost totals still describe the original activity;
+they are not an expense-date ledger. Doctor commission calculation rules are
+unchanged: saving MLS still schedules the existing commission recalculation.
+
+## Database rollout
+
+Apply `20261104000000_mls_expense_dates.sql` before releasing the new application.
+It is transactional, uses bounded lock/statement timeouts, and backfills existing
+items using their original payment or treatment date. It deliberately does not
+guess historical dates from creation timestamps or rewrite historical expenses.
+If an original date cannot be found, the migration aborts.
+
+Old open browser versions cannot save nonempty MLS lists without explicit dates;
+the database returns an instruction to reload/upgrade rather than silently moving
+costs. Refresh open browsers after deployment. Empty-list saves still mean
+intentional removal of all costs, as before.
+
+Do not roll back the database schema after dated costs have been entered: the old
+single-date model cannot represent them. Prefer a forward fix. Back up affected
+rows and the existing RPC definition before applying the migration. Do not commit
+database credentials or production backups.
+
+The SQL integration fixtures in `supabase/tests/mls_expense_dates.sql` use
+synthetic data and end with ROLLBACK. Review database triggers before running them
+against an environment with external trigger side effects. The rerun harness in
+the same directory checks that repeated migrations preserve stored data.

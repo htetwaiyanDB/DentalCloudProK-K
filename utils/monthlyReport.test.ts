@@ -21,6 +21,49 @@ const costs = (overrides: Partial<TreatmentCostSummary> = {}): TreatmentCostSumm
 });
 
 describe('monthly report', () => {
+  it('treats an empty dated ledger as authoritative while retaining legacy behavior when absent', () => {
+    const data = { records: [record()], payments: [payment()], costSummaries: { 'treatment-1': costs() },
+      paymentCostSummaries: { 'payment-1': costs() } };
+    expect(buildMonthlyReport(data).summary.mlsTotal).toBe(30);
+    expect(buildMonthlyReport({ ...data, costItems: [] }).summary).toMatchObject({ mlsTotal: 0, totalCost: 20, netProfit: 80 });
+  });
+
+  it('includes both range boundaries and all cost categories without repeating same-treatment revenue', () => {
+    const base = { patientId: 'patient-1', patientName: 'Aye Aye', treatmentLabel: 'Crown', treatmentDate: '2026-07-10',
+      doctorName: 'Doctor One', patientType: 'Walk-in', sourceType: 'treatment' as const, sourceId: 'treatment-1' };
+    const report = buildMonthlyReport({ records: [record()], payments: [], costSummaries: {},
+      dateFrom: '2026-07-01', dateTo: '2026-07-31', costItems: [
+        { ...base, id: 'm', expenseDate: '2026-07-01', costType: 'material', amount: 10 },
+        { ...base, id: 'l', expenseDate: '2026-07-31', costType: 'lab', amount: 20 },
+        { ...base, id: 's', expenseDate: '2026-07-15', costType: 'special_doctor', amount: 30 },
+        { ...base, id: 'old', expenseDate: '2026-06-30', costType: 'lab', amount: 999 }
+      ] });
+    expect(report.summary).toMatchObject({ treatmentCount: 1, production: 100, materialCost: 10, labCost: 20,
+      specialDoctorCost: 30, mlsTotal: 60, totalCost: 80, netProfit: 20, netMargin: 0.2 });
+    expect(report.byTreatment).toEqual([expect.objectContaining({ name: 'Crown', treatments: 1, patients: 1,
+      totalRevenue: 100, mlsTotal: 60, totalCost: 80, netProfit: 20, netMargin: 0.2 })]);
+  });
+
+  it('uses dated MLS independently of treatment production and legacy summaries', () => {
+    const item = { id: 'cost-1', expenseDate: '2026-07-01', costType: 'lab' as const, amount: 30,
+      patientId: 'old-patient', patientName: 'Old Patient', treatmentLabel: 'Old Crown', treatmentDate: '2026-06-10',
+      doctorName: 'Old Doctor', patientType: 'Referral', sourceType: 'payment' as const, sourceId: 'old-payment' };
+    const report = buildMonthlyReport({ records: [record()], payments: [payment()],
+      costSummaries: { 'treatment-1': costs() }, paymentCostSummaries: { 'payment-1': costs() },
+      dateFrom: '2026-07-01', dateTo: '2026-07-31',
+      costItems: [item, { ...item, id: 'outside', expenseDate: '2026-08-01', amount: 999 }] });
+    expect(report.costItems).toEqual([item]);
+    expect(report.rows).toHaveLength(1);
+    expect(report.rows[0]).toMatchObject({ mlsTotal: 0, totalRevenue: 100, totalCost: 20 });
+    expect(report.summary).toMatchObject({ treatmentCount: 1, patientCount: 1, production: 100, payment: 60,
+      labCost: 30, materialCost: 0, mlsTotal: 30, totalCost: 50, netProfit: 50 });
+    for (const groups of [report.byTreatment, report.byDoctor, report.byPatientType]) {
+      expect(groups.reduce((sum, group) => sum + group.mlsTotal, 0)).toBe(30);
+      expect(groups.reduce((sum, group) => sum + group.treatments, 0)).toBe(1);
+      expect(groups.find(group => group.mlsTotal === 30)).toMatchObject({ treatments: 0, patients: 0, totalRevenue: 0, netProfit: -30 });
+    }
+  });
+
   it('deduplicates and limits patient batches to production-safe request sizes', () => {
     const ids = [...Array.from({ length: 45 }, (_, index) => `patient-${index}`), 'patient-0', ''];
     const batches = chunkMonthlyReportPatientIds(ids);

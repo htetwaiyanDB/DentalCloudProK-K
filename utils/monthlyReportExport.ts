@@ -95,7 +95,10 @@ export const exportMonthlyReportToPDF = (report: MonthlyReport, metadata: Monthl
 
   autoTable(doc, {
     startY: 94,
-    head: [['Date', 'Pt Name', 'Age', 'Phone', 'City', 'Township', 'Pt Type', 'Treatment', 'Dentist / Doctor', 'Standard', 'Discount', 'Treatment Production', 'Payment', 'Current Patient Balance', 'Service', 'Medicine', 'Revenue', 'Material', 'Lab', 'Special Doctor', 'MLS Total', 'Doctor RF', 'Direct Cost', 'Contribution', 'Margin']],
+    head: [['Date', 'Pt Name', 'Age', 'Phone', 'City', 'Township', 'Pt Type', 'Treatment', 'Dentist / Doctor', 'Standard', 'Discount', 'Treatment Production', 'Payment', 'Current Patient Balance', 'Service', 'Medicine', 'Revenue', 'Material', 'Lab', 'Special Doctor', 'MLS Total', 'Doctor RF',
+      report.costItems !== undefined ? 'Direct Cost (excludes dated MLS)' : 'Direct Cost',
+      report.costItems !== undefined ? 'Contribution (pre-MLS)' : 'Contribution',
+      report.costItems !== undefined ? 'Margin (pre-MLS)' : 'Margin']],
     body: detailRows.length ? detailRows.map(row => [
       row.date, row.patientName, row.age === null ? '-' : String(row.age), row.phone, row.city, row.township, row.patientType,
       row.treatment, row.doctor, formatCurrency(row.standardCost, metadata.currency), formatCurrency(row.discount, metadata.currency),
@@ -139,6 +142,24 @@ export const exportMonthlyReportToPDF = (report: MonthlyReport, metadata: Monthl
   const secondEnd = Number((doc as any).lastAutoTable?.finalY || 145);
   if (secondEnd > doc.internal.pageSize.height - 65) doc.addPage();
   addPdfGroupTable(doc, 'Patient Type Performance', report.byPatientType, secondEnd > doc.internal.pageSize.height - 65 ? 20 : secondEnd + 10, metadata);
+
+  if (report.costItems !== undefined) {
+    doc.addPage();
+    doc.setFontSize(18);
+    doc.text('MLS Expenses (expense period)', 14, 20);
+    doc.setFontSize(9);
+    doc.text('Included once in summary and performance groups; excluded from treatment detail totals and treatment counts.', 14, 28);
+    autoTable(doc, {
+      startY: 34,
+      head: [['Expense Date', 'Original Treatment Date', 'Patient', 'Treatment', 'Clinician', 'Patient Type', 'Cost Type', 'Amount', 'Source Type', 'Source ID']],
+      body: report.costItems.map(item => [item.expenseDate, item.treatmentDate, item.patientName, item.treatmentLabel,
+        item.doctorName, item.patientType, item.costType, formatCurrency(item.amount, metadata.currency), item.sourceType, item.sourceId]),
+      foot: [['MLS TOTAL', '', '', '', '', '', '', formatCurrency(report.summary.mlsTotal, metadata.currency), '', '']],
+      theme: 'grid',
+      headStyles: { fillColor: [79, 70, 229], textColor: 255 },
+      margin: { left: 14, right: 14, bottom: 18 }
+    });
+  }
 
   if ((report.expenses || []).length > 0) {
     doc.addPage();
@@ -412,6 +433,26 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
       directCostTotal, contributionTotal, report.summary.totalRevenue > 0 ? contributionTotal / report.summary.totalRevenue : 0]
   ];
   const detailSheet: any = XLSX.utils.aoa_to_sheet(detailRows);
+  if (report.costItems !== undefined) {
+    const totalRow = 5 + detailData.length;
+    detailSheet.W4.v = 'Direct Cost (excludes dated MLS)';
+    detailSheet.X4.v = 'Contribution (pre-MLS)';
+    detailSheet.Y4.v = 'Margin (pre-MLS)';
+    detailSheet.A2.v += ' | Detail is pre-MLS. Summary includes dated MLS, unassigned revenue and operating expenses.';
+    // Every numeric subtotal must sum displayed rows, not the report summary
+    // (which can also contain revenue unassigned to any treatment).
+    for (let column = 9; column <= 23; column += 1) {
+      detailSheet[XLSX.utils.encode_cell({ r: totalRow - 1, c: column })].v =
+        Math.round(detailData.reduce((sum, row) => sum + Number(row[column]), 0) * 100) / 100;
+    }
+    const sum = (field: 'materialCost' | 'labCost' | 'specialDoctorCost' | 'mlsTotal' | 'totalCost' | 'netProfit') =>
+      Math.round(report.rows.reduce((total, row) => total + row[field], 0) * 100) / 100;
+    detailSheet[`A${totalRow}`].v = 'TREATMENT TOTAL (excludes dated MLS)';
+    for (const [column, field] of [['R', 'materialCost'], ['S', 'labCost'], ['T', 'specialDoctorCost'],
+      ['U', 'mlsTotal'], ['W', 'totalCost'], ['X', 'netProfit']] as const) detailSheet[`${column}${totalRow}`].v = sum(field);
+    const revenue = report.rows.reduce((total, row) => total + row.totalRevenue, 0);
+    detailSheet[`Y${totalRow}`].v = revenue > 0 ? sum('netProfit') / revenue : 0;
+  }
   detailSheet['!merges'] = [XLSX.utils.decode_range('A1:Y1'), XLSX.utils.decode_range('A2:Y2')];
   configureTableSheet(detailSheet, 4, detailData.length, 'Y', [15, 25, 8, 18, 18, 18, 18, 32, 24, 18, 16, 20, 19, 20, 17, 17, 18, 16, 16, 18, 16, 16, 16, 16, 14]);
   setNumberFormat(XLSX, detailSheet, 5, 5 + detailData.length, [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23], currency);
@@ -419,8 +460,25 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   styleReportBanner(XLSX, detailSheet, 'Y');
   styleTable(XLSX, detailSheet, 4, detailData.length, 5 + detailData.length, 'Y', [2, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24], [2]);
   groupedDetailRows.forEach((row, index) => styleProfitCell(detailSheet, `X${5 + index}`, row.netProfit));
-  styleProfitCell(detailSheet, `X${5 + detailData.length}`, contributionTotal, true);
+  styleProfitCell(detailSheet, `X${5 + detailData.length}`, Number(detailSheet[`X${5 + detailData.length}`].v), true);
   XLSX.utils.book_append_sheet(workbook, detailSheet, 'Treatment Detail');
+
+  if (report.costItems !== undefined) {
+    const costData = report.costItems.map(item => [item.expenseDate, item.treatmentDate, item.patientName,
+      item.treatmentLabel, item.doctorName, item.patientType, item.costType, item.amount, item.sourceType, item.sourceId, item.id]);
+    const sheet: any = XLSX.utils.aoa_to_sheet([
+      ['MLS EXPENSES — included once in summary and performance groups'],
+      ['Expense-period costs; excluded from treatment detail totals and treatment counts.'], [],
+      ['Expense Date', 'Original Treatment Date', 'Patient Name', 'Treatment', 'Clinician', 'Patient Type', 'Cost Type', 'Amount', 'Source Type', 'Source ID', 'Cost ID'],
+      ...costData, ['MLS TOTAL', '', '', '', '', '', '', report.summary.mlsTotal]
+    ]);
+    sheet['!merges'] = [XLSX.utils.decode_range('A1:K1'), XLSX.utils.decode_range('A2:K2')];
+    configureTableSheet(sheet, 4, costData.length, 'K', [16, 24, 25, 32, 24, 18, 20, 18, 18, 30, 30]);
+    setNumberFormat(XLSX, sheet, 5, 5 + costData.length, [7], currency);
+    styleReportBanner(XLSX, sheet, 'K');
+    styleTable(XLSX, sheet, 4, costData.length, 5 + costData.length, 'K', [7]);
+    XLSX.utils.book_append_sheet(workbook, sheet, 'MLS Expenses');
+  }
 
   const appendGroupSheet = (name: string, title: string, categoryHeader: string, groups: MonthlyReportGroup[]) => {
     const groupData = groups.map(group => [

@@ -4,6 +4,7 @@ import type { ClinicalRecord, Doctor, MaterialLabCostPreset, MaterialLabCostPres
 import { api } from '../services/api';
 import { auth } from '../services/auth';
 import { formatCurrency, type Currency } from '../utils/currency';
+import { getLocalDateKey } from '../utils/receiptItemRecency';
 import { formatDoctorName } from '../utils/doctorName';
 import { canManageMaterialCosts } from '../utils/permissions';
 import { applyMaterialCostPreset, sortMaterialCostPresets, type MaterialCostDraftRow } from '../utils/materialCostPresets';
@@ -22,7 +23,7 @@ interface MaterialCostModalProps {
 }
 
 type CostDraft = PatientMaterialCostInput & MaterialCostDraftRow;
-const createEmptyDraft = (costType: TreatmentCostType): CostDraft => ({ localId: `${costType}-${Date.now()}-${Math.random().toString(36).slice(2)}`, materialName: '', costType, costAmount: 0, quantity: 1, isPristine: true });
+const createEmptyDraft = (costType: TreatmentCostType): CostDraft => ({ localId: `${costType}-${Date.now()}-${Math.random().toString(36).slice(2)}`, expenseDate: getLocalDateKey(new Date()), materialName: '', costType, costAmount: 0, quantity: 1, isPristine: true });
 const isVisible = (item: CostDraft) => item.materialName.trim() || item.costAmount > 0 || item.quantity !== 1;
 const getTotal = (items: CostDraft[]) => items.filter(isVisible).reduce((sum, item) => sum + Number(item.costAmount || 0) * Number(item.quantity || 0), 0);
 const getRecordActivity = (record: MaterialCostModalProps['record']) => {
@@ -52,7 +53,7 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
     setLoading(true); setSaving(false); setError(null); setLoadFailed(false);
     (payment ? api.materialCosts.getByPaymentId(payment.id) : api.materialCosts.getByTreatmentId(record.id)).then(({ items: saved }) => {
       if (cancelled) return;
-      const drafts: CostDraft[] = saved.map((item) => ({ localId: item.id, materialName: item.materialName, costType: item.costType, costAmount: item.costAmount, quantity: item.quantity, doctorId: item.doctorId, isPristine: false }));
+      const drafts: CostDraft[] = saved.map((item) => ({ localId: item.id, id: item.id, expenseDate: item.expenseDate, materialName: item.materialName, costType: item.costType, costAmount: item.costAmount, quantity: item.quantity, doctorId: item.doctorId, isPristine: false }));
       if (!drafts.some((item) => item.costType === 'material')) drafts.push(createEmptyDraft('material'));
       if (!drafts.some((item) => item.costType === 'lab')) drafts.push(createEmptyDraft('lab'));
       if (!drafts.some((item) => item.costType === 'special_doctor')) drafts.push(createEmptyDraft('special_doctor'));
@@ -154,9 +155,10 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
       const session = auth.getSession();
       if (!session?.userId || !canManageMaterialCosts(session.role, session.allowed_tabs)) throw new Error('You do not have permission to update treatment costs.');
       if (!session.staffAuthToken) throw new Error('Your staff session needs a one-time refresh. Sign out and sign back in, then save again.');
+      if (visibleItems.some((item) => !item.expenseDate)) throw new Error('Each cost item needs an Expense Date.');
       const incomplete = visibleItems.find((item) => !item.materialName.trim() || Number(item.costAmount) <= 0 || Number(item.quantity) <= 0);
       if (incomplete) throw new Error(`Each ${incomplete.costType === 'lab' ? 'lab cost' : incomplete.costType === 'special_doctor' ? 'special doctor cost' : 'material'} needs a name, a cost greater than zero, and a quantity greater than zero.`);
-      const costItems = visibleItems.map((item) => ({ materialName: item.materialName.trim(), costType: item.costType, costAmount: Number(item.costAmount), quantity: Number(item.quantity), doctorId: item.costType === 'special_doctor' ? item.doctorId || null : null }));
+      const costItems = visibleItems.map((item) => ({ id: item.id, expenseDate: item.expenseDate, materialName: item.materialName.trim(), costType: item.costType, costAmount: Number(item.costAmount), quantity: Number(item.quantity), doctorId: item.costType === 'special_doctor' ? item.doctorId || null : null }));
       const actor = { userId: session.userId, username: session.username, authToken: session.staffAuthToken };
       const result = payment
         ? await api.materialCosts.upsertForPayment(payment, record, costItems, actor)
@@ -197,6 +199,7 @@ const MaterialCostModal: React.FC<MaterialCostModalProps> = ({ isOpen, payment, 
         <div><label className="mb-1 block text-xs font-bold text-slate-500 sm:hidden" htmlFor={`${item.localId}-name`}>{lab ? 'Lab / Service' : specialDoctor ? 'Doctor / Service' : 'Material'}</label><input id={`${item.localId}-name`} aria-label={`${label} row ${index + 1} name`} type="text" maxLength={255} value={item.materialName} onChange={(e) => updateItem(item.localId, { materialName: e.target.value })} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[var(--hover-500)] focus:ring-4 focus:ring-[var(--hover-100)]" placeholder={lab ? 'e.g. Crown fabrication' : specialDoctor ? 'e.g. Visiting surgeon' : 'e.g. Composite resin'} />{specialDoctor && <div className="mt-2"><label className="mb-1 block text-xs font-bold text-slate-500">Assign to doctor</label><SearchableSelect value={item.doctorId || ''} onChange={(doctorId) => updateItem(item.localId, { doctorId: doctorId || null })} options={[{ value: '', label: 'Unassigned' }, ...doctors.map((doctor) => ({ value: doctor.id, label: formatDoctorName(doctor.name) }))]} placeholder="Search and select doctor" emptyMessage="No doctors match your search" /></div>}</div>
         <div><label className="mb-1 block text-xs font-bold text-slate-500 sm:hidden" htmlFor={`${item.localId}-cost`}>Unit Cost</label><input id={`${item.localId}-cost`} aria-label={`${label} row ${index + 1} unit cost`} type="number" min="0.01" step="0.01" value={item.costAmount || ''} onChange={(e) => updateItem(item.localId, { costAmount: Number(e.target.value || 0) })} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[var(--hover-500)] focus:ring-4 focus:ring-[var(--hover-100)]" placeholder="0" /></div>
         <div><label className="mb-1 block text-xs font-bold text-slate-500 sm:hidden" htmlFor={`${item.localId}-quantity`}>Quantity</label><input id={`${item.localId}-quantity`} aria-label={`${label} row ${index + 1} quantity`} type="number" min="0.01" step="0.01" value={item.quantity || ''} onChange={(e) => updateItem(item.localId, { quantity: Number(e.target.value || 0) })} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-[var(--hover-500)] focus:ring-4 focus:ring-[var(--hover-100)]" placeholder="1" /></div>
+        <div className="sm:col-span-full"><label className="mb-1 block text-xs font-bold text-slate-500" htmlFor={`${item.localId}-expense-date`}>Expense Date</label><input id={`${item.localId}-expense-date`} type="date" required={Boolean(isVisible(item))} value={item.expenseDate || ''} onChange={(e) => updateItem(item.localId, { expenseDate: e.target.value })} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /><p className="mt-1 text-xs text-slate-500">When this expense was incurred, independent of the original treatment or payment date.</p></div>
         <button type="button" onClick={() => removeItem(item.localId, costType)} className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-red-100 bg-red-50 text-red-600 hover:bg-red-100 sm:w-11" aria-label={`Remove ${label.toLowerCase()} row`}><Trash2 size={16} /></button>
       </div>)}
       <button type="button" onClick={() => setItems((current) => [...current, createEmptyDraft(costType)])} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[var(--hover-200)] bg-[var(--hover-50)] px-4 py-2.5 text-sm font-bold text-[var(--hover-700)] hover:bg-[var(--hover-100)]"><Plus size={16} />Add {lab ? 'Lab Cost' : specialDoctor ? 'Special Doctor' : 'Material'}</button>

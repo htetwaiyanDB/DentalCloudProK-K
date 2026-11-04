@@ -17,7 +17,7 @@ import { enumValue, finiteNumber, strictDateString, trimOptional, trimRequired }
 import { buildPatientCreatedAt } from '../utils/patientCreationDate';
 import { summarizeTreatmentCostRows } from '../utils/treatmentCostSummaries';
 import { buildPatientProfileUpdatePayload } from '../utils/patientProfileUpdate';
-import { chunkMonthlyReportPatientIds, type MonthlyReportSourceRecord } from '../utils/monthlyReport';
+import { chunkMonthlyReportPatientIds, type MonthlyReportSourceRecord, type MonthlyReportCostItem } from '../utils/monthlyReport';
 import { chunkUniqueIds, mapWithConcurrency, REPORT_REQUEST_CONCURRENCY } from '../utils/reportBatching';
 import { normalizeMaterialCostPresetInputs, sortMaterialCostPresets } from '../utils/materialCostPresets';
 import { buildDoctorDirectWritePayload } from '../utils/doctorWritePayload';
@@ -733,12 +733,25 @@ const mapPaymentRow = (row: any): PaymentRecord => {
   });
 };
 
+const normalizeExpenseDate = (value: string): string => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000')) throw new Error('Expense Date must be a valid YYYY-MM-DD calendar date.');
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) throw new Error('Expense Date must be a valid YYYY-MM-DD calendar date.');
+  return value;
+};
+
+const serializeCostIdentity = (item: PatientMaterialCostInput) => ({
+  ...(item.id !== undefined ? { id: trimRequired(item.id, 'Cost item ID') } : {}),
+  ...(item.expenseDate !== undefined ? { expense_date: normalizeExpenseDate(item.expenseDate) } : {})
+});
+
 const mapPatientMaterialCostRow = (row: any): PatientMaterialCost => {
   const costAmount = Number(row.cost_amount || 0);
   const quantity = Number(row.quantity || 0);
   return {
     id: row.id,
     auditLogId: row.audit_log_id,
+    expenseDate: row.expense_date,
     materialName: row.material_name,
     costType: row.cost_type === 'lab' ? 'lab' : row.cost_type === 'special_doctor' ? 'special_doctor' : 'material',
     costAmount,
@@ -3224,6 +3237,29 @@ export const api = {
   },
 
   materialCosts: {
+    getReportCostItems: async ({ locationId, dateFrom, dateTo }: {
+      locationId?: string; dateFrom: string; dateTo: string;
+    }): Promise<MonthlyReportCostItem[]> => {
+      const fromDate = normalizeExpenseDate(dateFrom);
+      const toDate = normalizeExpenseDate(dateTo);
+      if (fromDate > toDate) throw new Error('Expense date range is reversed.');
+      const { data, error } = await fetchAllRows<any>((from, to) => {
+        let query = supabase.from('mls_expense_report')
+          .select('id,expense_date,cost_type,total_amount,patient_id,patient_name,treatment_label,treatment_date,doctor_name,patient_type,source_type,source_id,location_id')
+          .gte('expense_date', fromDate).lte('expense_date', toDate)
+          .order('expense_date', { ascending: true }).order('id', { ascending: true }).range(from, to);
+        if (locationId) query = query.eq('location_id', locationId);
+        return query;
+      });
+      if (error) throw new Error(`Unable to load MLS expense report. Ensure the latest MLS expense-date migration is installed. ${error.message}`);
+      return (data || []).map((row) => ({
+        id: row.id, expenseDate: row.expense_date, costType: row.cost_type,
+        amount: Number(row.total_amount), patientId: row.patient_id || '',
+        patientName: row.patient_name || '', treatmentLabel: row.treatment_label || '',
+        treatmentDate: row.treatment_date || '', doctorName: row.doctor_name || '',
+        patientType: row.patient_type || '', sourceType: row.source_type, sourceId: row.source_id
+      }));
+    },
     getPresets: async (
       actor: { userId: string; authToken: string }
     ): Promise<{ presets: MaterialLabCostPreset[]; revision: number }> => {
@@ -3440,6 +3476,7 @@ export const api = {
       const paymentId = trimRequired(payment.id, 'Payment record');
       const normalizedItems = items
         .map((item) => ({
+          ...serializeCostIdentity(item),
           material_name: trimRequired(item.materialName, item.costType === 'lab' ? 'Lab cost name' : item.costType === 'special_doctor' ? 'Special doctor name' : 'Material name', { maxLength: 255 }),
           cost_type: enumValue(item.costType, ['material', 'lab', 'special_doctor'] as const, 'Cost type'),
           cost_amount: finiteNumber(item.costAmount, item.costType === 'lab' ? 'Lab cost' : item.costType === 'special_doctor' ? 'Special doctor cost' : 'Material cost', { min: 0.01 }),
@@ -3540,6 +3577,7 @@ export const api = {
       const treatmentId = trimRequired(treatment.id, 'Treatment audit row');
       const normalizedItems = items
         .map((item) => ({
+          ...serializeCostIdentity(item),
           material_name: trimRequired(item.materialName, item.costType === 'lab' ? 'Lab cost name' : item.costType === 'special_doctor' ? 'Special doctor name' : 'Material name', { maxLength: 255 }),
           cost_type: enumValue(item.costType, ['material', 'lab', 'special_doctor'] as const, 'Cost type'),
           cost_amount: finiteNumber(item.costAmount, item.costType === 'lab' ? 'Lab cost' : item.costType === 'special_doctor' ? 'Special doctor cost' : 'Material cost', { min: 0.01 }),

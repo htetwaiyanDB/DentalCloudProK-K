@@ -539,7 +539,7 @@ export const exportClinicalRecordsToPDF = (records: ClinicalRecord[], currency: 
 };
 
 export const exportMaterialCostsToPDF = (rows: MaterialCostExportRow[], currency: Currency) => {
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+  const doc = new jsPDF('landscape', 'mm', 'a3');
   doc.setFontSize(18);
   doc.text('MLS Cost Report', 14, 18);
   doc.setFontSize(9);
