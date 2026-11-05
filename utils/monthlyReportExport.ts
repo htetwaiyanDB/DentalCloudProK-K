@@ -26,12 +26,13 @@ const addPdfGroupTable = (doc: jsPDF, title: string, groups: MonthlyReportGroup[
   doc.text(title, 14, startY);
   autoTable(doc, {
     startY: startY + 4,
-    head: [['Category', 'Treatments', 'Patients', 'Discount', 'Production', 'Payment', 'Service', 'Medicine', 'Revenue', 'MLS', 'Direct Cost', 'Contribution', 'Margin']],
+    head: [['Category', 'Treatments', 'Patients', 'Discount', 'Production', 'Payment', 'Service', 'Medicine', 'Revenue', 'MLS', 'Doctor Earnings (RF)', 'Direct Cost', 'Contribution', 'Margin']],
     body: groups.slice(0, 15).map(group => [
       group.name, String(group.treatments), String(group.patients), formatCurrency(group.discount, metadata.currency),
       formatCurrency(group.production, metadata.currency), formatCurrency(group.payment, metadata.currency),
       formatCurrency(group.serviceCharges, metadata.currency), formatCurrency(group.medicineSales, metadata.currency),
-      formatCurrency(group.totalRevenue, metadata.currency), formatCurrency(group.mlsTotal, metadata.currency), formatCurrency(group.totalCost, metadata.currency),
+      formatCurrency(group.totalRevenue, metadata.currency), formatCurrency(group.mlsTotal, metadata.currency),
+      formatCurrency(group.doctorCost, metadata.currency), formatCurrency(group.totalCost, metadata.currency),
       formatCurrency(group.netProfit, metadata.currency), percentage(group.netMargin)
     ]),
     theme: 'striped',
@@ -527,28 +528,28 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   const appendGroupSheet = (name: string, title: string, categoryHeader: string, groups: MonthlyReportGroup[]) => {
     const groupData = groups.map(group => [
       group.name, group.treatments, group.patients, group.discount, group.production, group.payment, group.serviceCharges,
-      group.medicineSales, group.totalRevenue, group.mlsTotal, group.totalCost, group.netProfit, group.netMargin
+      group.medicineSales, group.totalRevenue, group.mlsTotal, group.doctorCost, group.totalCost, group.netProfit, group.netMargin
     ]);
     const rows: Array<Array<string | number>> = [
-      [title, ...Array(12).fill('')],
-      [reportSubtitle(metadata), ...Array(12).fill('')],
-      ['', ...Array(12).fill('')],
-      [categoryHeader, 'Treatments', 'Distinct Patients', 'Discount', 'Treatment Production', 'Collected Payment', 'Service Charges', 'Medicine Sales', 'Total Revenue', 'MLS Total', 'Direct Cost', 'Contribution', 'Contribution Margin'],
+      [title, ...Array(13).fill('')],
+      [reportSubtitle(metadata), ...Array(13).fill('')],
+      ['', ...Array(13).fill('')],
+      [categoryHeader, 'Treatments', 'Distinct Patients', 'Discount', 'Treatment Production', 'Collected Payment', 'Service Charges', 'Medicine Sales', 'Total Revenue', 'MLS Total', 'Doctor Earnings (RF)', 'Direct Cost', 'Contribution', 'Contribution Margin'],
       ...groupData,
       ['REPORT TOTAL', report.summary.treatmentCount, report.summary.patientCount, report.summary.discount, report.summary.production,
         report.summary.payment, report.summary.serviceCharges, report.summary.medicineSales, report.summary.totalRevenue,
-        report.summary.mlsTotal, directCostTotal, contributionTotal,
+        report.summary.mlsTotal, report.summary.doctorCost, directCostTotal, contributionTotal,
         report.summary.totalRevenue > 0 ? contributionTotal / report.summary.totalRevenue : 0]
     ];
     const sheet: any = XLSX.utils.aoa_to_sheet(rows);
-    sheet['!merges'] = [XLSX.utils.decode_range('A1:M1'), XLSX.utils.decode_range('A2:M2')];
-    configureTableSheet(sheet, 4, groupData.length, 'M', [34, 13, 18, 16, 21, 19, 17, 17, 18, 16, 16, 16, 14]);
-    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [3, 4, 5, 6, 7, 8, 9, 10, 11], currency);
-    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [12], '0.0%');
-    styleReportBanner(XLSX, sheet, 'M');
-    styleTable(XLSX, sheet, 4, groupData.length, 5 + groupData.length, 'M', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [1, 2]);
-    groups.forEach((group, index) => styleProfitCell(sheet, `L${5 + index}`, group.netProfit));
-    styleProfitCell(sheet, `L${5 + groupData.length}`, contributionTotal, true);
+    sheet['!merges'] = [XLSX.utils.decode_range('A1:N1'), XLSX.utils.decode_range('A2:N2')];
+    configureTableSheet(sheet, 4, groupData.length, 'N', [34, 13, 18, 16, 21, 19, 17, 17, 18, 16, 16, 16, 16, 14]);
+    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12], currency);
+    setNumberFormat(XLSX, sheet, 5, 5 + groupData.length, [13], '0.0%');
+    styleReportBanner(XLSX, sheet, 'N');
+    styleTable(XLSX, sheet, 4, groupData.length, 5 + groupData.length, 'N', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], [1, 2]);
+    groups.forEach((group, index) => styleProfitCell(sheet, `M${5 + index}`, group.netProfit));
+    styleProfitCell(sheet, `M${5 + groupData.length}`, contributionTotal, true);
     XLSX.utils.book_append_sheet(workbook, sheet, name);
   };
 

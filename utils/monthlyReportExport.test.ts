@@ -34,9 +34,9 @@ const report: MonthlyReport = {
     mlsTotal: 15000, doctorCost: 20000, operatingExpenses: 0, totalCost: 35000, netProfit: 65000,
     netMargin: 0.65, collectionRate: 0.6
   },
-  byTreatment: [{ name: 'Crown', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
-  byDoctor: [{ name: 'Doctor One', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
-  byPatientType: [{ name: 'Walk-in', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
+  byTreatment: [{ name: 'Crown', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, doctorCost: 20000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
+  byDoctor: [{ name: 'Doctor One', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, doctorCost: 20000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
+  byPatientType: [{ name: 'Walk-in', treatments: 1, patients: 1, discount: 0, production: 100000, payment: 60000, serviceCharges: 0, medicineSales: 0, totalRevenue: 100000, mlsTotal: 15000, doctorCost: 20000, totalCost: 35000, netProfit: 65000, netMargin: 0.65 }],
   expenses: []
 };
 
@@ -212,6 +212,10 @@ describe('monthly report Excel workbook', () => {
     expect(clinician.A4.v).toBe('Clinician');
     expect(clinician.E4.v).toBe('Treatment Production');
     expect(clinician.J4.v).toBe('MLS Total');
+    expect(clinician.K4.v).toBe('Doctor Earnings (RF)');
+    expect(clinician.K5.v).toBe(20000);
+    expect(clinician.L4.v).toBe('Direct Cost');
+    expect(clinician.L5.v).toBe(35000);
     expect(clinician.A6.v).toBe('REPORT TOTAL');
   });
 
@@ -338,9 +342,9 @@ describe('monthly report Excel workbook', () => {
         netMargin: 0.675, collectionRate: 0.5
       },
       byTreatment: [
-        { name: 'Crown', treatments: 2, patients: 1, discount: 0, production: 125000, payment: 70000, serviceCharges: 0, medicineSales: 0, totalRevenue: 125000, mlsTotal: 15000, totalCost: 45000, netProfit: 80000, netMargin: 0.64 },
-        { name: 'Filling', treatments: 1, patients: 1, discount: 0, production: 50000, payment: 30000, serviceCharges: 0, medicineSales: 0, totalRevenue: 50000, mlsTotal: 5000, totalCost: 15000, netProfit: 35000, netMargin: 0.7 },
-        { name: 'Scaling', treatments: 1, patients: 1, discount: 0, production: 25000, payment: 0, serviceCharges: 0, medicineSales: 0, totalRevenue: 25000, mlsTotal: 0, totalCost: 5000, netProfit: 20000, netMargin: 0.8 }
+        { name: 'Crown', treatments: 2, patients: 1, discount: 0, production: 125000, payment: 70000, serviceCharges: 0, medicineSales: 0, totalRevenue: 125000, mlsTotal: 15000, doctorCost: 30000, totalCost: 45000, netProfit: 80000, netMargin: 0.64 },
+        { name: 'Filling', treatments: 1, patients: 1, discount: 0, production: 50000, payment: 30000, serviceCharges: 0, medicineSales: 0, totalRevenue: 50000, mlsTotal: 5000, doctorCost: 10000, totalCost: 15000, netProfit: 35000, netMargin: 0.7 },
+        { name: 'Scaling', treatments: 1, patients: 1, discount: 0, production: 25000, payment: 0, serviceCharges: 0, medicineSales: 0, totalRevenue: 25000, mlsTotal: 0, doctorCost: 5000, totalCost: 5000, netProfit: 20000, netMargin: 0.8 }
       ]
     };
 
