@@ -116,6 +116,7 @@ export interface MonthlyReportGroup {
   medicineSales: number;
   totalRevenue: number;
   mlsTotal: number;
+  doctorCost: number;
   totalCost: number;
   netProfit: number;
   netMargin: number;
@@ -396,6 +397,7 @@ const groupRows = (rows: MonthlyReportRow[], key: (row: MonthlyReportRow) => str
       medicineSales: summary.medicineSales,
       totalRevenue: summary.totalRevenue,
       mlsTotal: summary.mlsTotal,
+      doctorCost: summary.doctorCost,
       totalCost: summary.totalCost,
       netProfit: summary.netProfit,
       netMargin: summary.netMargin
@@ -423,6 +425,7 @@ const appendUnassignedRevenueGroups = (
       medicineSales: 0,
       totalRevenue: unassignedServiceCharges,
       mlsTotal: 0,
+      doctorCost: 0,
       totalCost: 0,
       netProfit: unassignedServiceCharges,
       netMargin: 1
@@ -440,6 +443,7 @@ const appendUnassignedRevenueGroups = (
       medicineSales: unassignedMedicineSales,
       totalRevenue: unassignedMedicineSales,
       mlsTotal: 0,
+      doctorCost: 0,
       totalCost: 0,
       netProfit: unassignedMedicineSales,
       netMargin: 1
@@ -468,7 +472,8 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
         let group = groups.find(candidate => candidate.name === name);
         if (!group) {
           group = { name, treatments: 0, patients: 0, discount: 0, production: 0, payment: 0,
-            serviceCharges: 0, medicineSales: 0, totalRevenue: 0, mlsTotal: 0, totalCost: 0, netProfit: 0, netMargin: 0 };
+            serviceCharges: 0, medicineSales: 0, totalRevenue: 0, mlsTotal: 0, doctorCost: 0,
+            totalCost: 0, netProfit: 0, netMargin: 0 };
           groups.push(group);
         }
         group.mlsTotal = money(group.mlsTotal + item.amount);
