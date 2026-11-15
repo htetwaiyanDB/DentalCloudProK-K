@@ -10,6 +10,7 @@ import { chunkUniqueIds, REPORT_URL_BATCH_SIZE } from './reportBatching';
 import { getPaymentServiceFeeAmount } from './serviceFee';
 import { getAuditLogEventDate } from './auditLogFilters';
 import { buildAuditLogRows, type AuditExportRow } from './auditLogExport';
+import { isCommissionEntryInDoctorDashboardRange } from './doctorDashboardRange';
 
 export interface MonthlyReportSourceRecord extends ClinicalRecord {
   patient_age?: number | null;
@@ -35,10 +36,26 @@ export interface MonthlyReportCostItem {
   sourceId: string;
 }
 
+export interface MonthlyReportDoctorCommissionEntry {
+  doctorId?: string | null;
+  doctorName?: string | null;
+  patientId?: string | null;
+  treatmentId: string;
+  paymentId?: string | null;
+  // Ledger commission is recognised on the date the payment was received and
+  // carries day precision, exactly like the Doctor dashboard range filter.
+  paymentDate: string;
+  earnings: number;
+}
+
 export interface MonthlyReportData {
   costItems?: MonthlyReportCostItem[];
   records: MonthlyReportSourceRecord[];
   allocationRecords?: MonthlyReportSourceRecord[];
+  // Commission ledger rows (`doctor_commission_entries`) whose payment date falls
+  // inside the report period. An empty array is authoritative (no commission was
+  // earned in the period); `undefined` keeps the legacy stored-earnings behaviour.
+  doctorCommissions?: MonthlyReportDoctorCommissionEntry[];
   payments: PaymentRecord[];
   costSummaries: Record<string, TreatmentCostSummary>;
   paymentCostSummaries?: Record<string, TreatmentCostSummary>;
@@ -482,6 +499,107 @@ const isInsideReportPeriod = (date: string, dateFrom?: string, dateTo?: string):
   (!dateFrom || !date || date >= dateFrom) && (!dateTo || !date || date <= dateTo)
 );
 
+interface MonthlyReportCommissionIndex {
+  byTreatment: Map<string, number>;
+  byDoctor: Map<string, { doctorName: string; earnings: number; patientIds: Set<string> }>;
+  total: number;
+}
+
+// Doctor commission follows the Doctor dashboard: it is recognised on the date
+// the payment (invoice payment, remaining balance or installment) is received,
+// not on the treatment date. The ledger rows are therefore grouped by their
+// payment date, exactly like `buildDoctorDashboardRangeSummary`.
+const buildCommissionIndex = (entries: MonthlyReportDoctorCommissionEntry[]): MonthlyReportCommissionIndex => {
+  const byTreatment = new Map<string, number>();
+  const byDoctor = new Map<string, { doctorName: string; earnings: number; patientIds: Set<string> }>();
+  let total = 0;
+  entries.forEach((entry) => {
+    const earnings = positiveMoney(entry.earnings);
+    if (earnings <= 0) return;
+    total = money(total + earnings);
+    if (entry.treatmentId) {
+      byTreatment.set(entry.treatmentId, money((byTreatment.get(entry.treatmentId) || 0) + earnings));
+    }
+    const doctorName = entry.doctorName?.trim() || 'Unassigned';
+    const current = byDoctor.get(doctorName) || { doctorName, earnings: 0, patientIds: new Set<string>() };
+    current.earnings = money(current.earnings + earnings);
+    if (entry.patientId) current.patientIds.add(entry.patientId);
+    byDoctor.set(doctorName, current);
+  });
+  return { byTreatment, byDoctor, total };
+};
+
+// The Clinician sheet shows the period commission of every clinician, including
+// commission collected in the period for treatments dated before it. Those
+// clinicians can be missing from the in-period treatment rows entirely.
+const applyLedgerDoctorCommissions = (
+  groups: MonthlyReportGroup[],
+  commission: MonthlyReportCommissionIndex
+): MonthlyReportGroup[] => {
+  const result = groups.map((group) => {
+    const doctorCost = commission.byDoctor.get(group.name)?.earnings || 0;
+    const totalCost = money(group.mlsTotal + doctorCost);
+    const netProfit = money(group.totalRevenue - totalCost);
+    return {
+      ...group,
+      doctorCost,
+      totalCost,
+      netProfit,
+      netMargin: group.totalRevenue > 0 ? netProfit / group.totalRevenue : 0
+    };
+  });
+  const knownNames = new Set(result.map((group) => group.name));
+  Array.from(commission.byDoctor.values())
+    .filter((doctor) => !knownNames.has(doctor.doctorName))
+    .sort((a, b) => b.earnings - a.earnings || a.doctorName.localeCompare(b.doctorName))
+    .forEach((doctor) => {
+      result.push({
+        name: doctor.doctorName,
+        treatments: 0,
+        patients: doctor.patientIds.size,
+        discount: 0,
+        production: 0,
+        payment: 0,
+        serviceCharges: 0,
+        medicineSales: 0,
+        totalRevenue: 0,
+        mlsTotal: 0,
+        doctorCost: money(doctor.earnings),
+        totalCost: money(doctor.earnings),
+        netProfit: money(-doctor.earnings),
+        netMargin: 0
+      });
+    });
+  return result;
+};
+
+// Commission collected in the period for earlier treatments has no production
+// row in this period. Keep it visible so the performance sheets still reconcile
+// with the report total instead of silently dropping it.
+const appendDoctorCommissionAdjustment = (
+  groups: MonthlyReportGroup[],
+  amount: number,
+  patientCount: number
+): MonthlyReportGroup[] => {
+  if (amount <= 0) return groups;
+  return [...groups, {
+    name: 'Commission on earlier treatments / No treatment in period',
+    treatments: 0,
+    patients: patientCount,
+    discount: 0,
+    production: 0,
+    payment: 0,
+    serviceCharges: 0,
+    medicineSales: 0,
+    totalRevenue: 0,
+    mlsTotal: 0,
+    doctorCost: amount,
+    totalCost: amount,
+    netProfit: money(-amount),
+    netMargin: 0
+  }];
+};
+
 // The report Payments table is taken from the Audit Log → Payments tab, not from
 // a second calculation of its own. `buildAuditLogRows` is the builder the Records
 // page renders, so the receipts listed here, the recorded date/time they show and
@@ -554,6 +672,16 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
     return report;
   }
   const allocationRecords = data.allocationRecords || data.records;
+  // Doctor commission is payment-dated, so the ledger rows are filtered with the
+  // exact same day-precision boundaries the Doctor dashboard range uses.
+  const commissionRange = data.dateFrom && data.dateTo
+    ? { start: `${data.dateFrom}T00:00`, end: `${data.dateTo}T23:59` }
+    : null;
+  const doctorCommissionEntries = data.doctorCommissions === undefined
+    ? null
+    : data.doctorCommissions.filter((entry) => !commissionRange
+      || isCommissionEntryInDoctorDashboardRange(entry, commissionRange));
+  const commissionIndex = doctorCommissionEntries ? buildCommissionIndex(doctorCommissionEntries) : null;
   // The Payments table of the report mirrors the Audit Log → Payments tab:
   // the same receipts, the same recorded date/time and the same doctor
   // commission per receipt. Only receipts shown on that tab for this period are
@@ -685,7 +813,10 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
     const materialCost = money(positiveMoney(costs?.materialTotal) + positiveMoney(paymentCosts?.materialTotal));
     const specialDoctorCost = money(positiveMoney(costs?.specialDoctorTotal) + positiveMoney(paymentCosts?.specialDoctorTotal));
     const mlsTotal = money(materialCost + labCost + specialDoctorCost);
-    const doctorCost = positiveMoney(record.doctorEarnings);
+    // Ledger mode: only commission actually collected inside the period counts.
+    const doctorCost = commissionIndex
+      ? positiveMoney(commissionIndex.byTreatment.get(record.id))
+      : positiveMoney(record.doctorEarnings);
     const totalCost = money(mlsTotal + doctorCost);
     const netProfit = money(totalRevenue - totalCost);
     return {
@@ -735,33 +866,61 @@ export const buildMonthlyReport = (data: MonthlyReportData): MonthlyReport => {
       .reduce((sum, payment) => sum + positiveMoney(payment.amount), 0)
   );
 
+  const summary: MonthlyReportSummary = {
+    ...summarizeRows(rows, operatingExpenses, unassignedServiceCharges, unassignedMedicineSales),
+    balanceCollections,
+    collectedReceipts
+  };
+  let priorPeriodCommission = 0;
+  const priorPeriodCommissionPatientIds = new Set<string>();
+  if (commissionIndex) {
+    // The report total is the period commission of the ledger, so it matches the
+    // sum of the Clinician sheet and the Doctor dashboard commission figure.
+    summary.doctorCost = commissionIndex.total;
+    summary.totalCost = money(summary.mlsTotal + commissionIndex.total + summary.operatingExpenses);
+    summary.netProfit = money(summary.totalRevenue - summary.totalCost);
+    summary.netMargin = summary.totalRevenue > 0 ? summary.netProfit / summary.totalRevenue : 0;
+    const inPeriodCommission = money(rows.reduce((sum, row) => sum + row.doctorCost, 0));
+    priorPeriodCommission = money(Math.max(0, commissionIndex.total - inPeriodCommission));
+    (doctorCommissionEntries || []).forEach((entry) => {
+      if (recordById.has(entry.treatmentId)) return;
+      if (entry.patientId) priorPeriodCommissionPatientIds.add(entry.patientId);
+    });
+  }
+
   return {
     rows,
-    summary: {
-      ...summarizeRows(rows, operatingExpenses, unassignedServiceCharges, unassignedMedicineSales),
-      balanceCollections,
-      collectedReceipts
-    },
-    byTreatment: appendUnassignedRevenueGroups(
-      groupRows(rows, row => row.treatment),
-      unassignedServiceCharges,
-      unassignedServicePatientIds.size,
-      unassignedMedicineSales,
-      unassignedMedicinePatientIds.size
+    summary,
+    byTreatment: appendDoctorCommissionAdjustment(
+      appendUnassignedRevenueGroups(
+        groupRows(rows, row => row.treatment),
+        unassignedServiceCharges,
+        unassignedServicePatientIds.size,
+        unassignedMedicineSales,
+        unassignedMedicinePatientIds.size
+      ),
+      priorPeriodCommission,
+      priorPeriodCommissionPatientIds.size
     ),
     byDoctor: appendUnassignedRevenueGroups(
-      groupRows(rows, row => row.doctor),
+      commissionIndex
+        ? applyLedgerDoctorCommissions(groupRows(rows, row => row.doctor), commissionIndex)
+        : groupRows(rows, row => row.doctor),
       unassignedServiceCharges,
       unassignedServicePatientIds.size,
       unassignedMedicineSales,
       unassignedMedicinePatientIds.size
     ),
-    byPatientType: appendUnassignedRevenueGroups(
-      groupRows(rows, row => row.patientType),
-      unassignedServiceCharges,
-      unassignedServicePatientIds.size,
-      unassignedMedicineSales,
-      unassignedMedicinePatientIds.size
+    byPatientType: appendDoctorCommissionAdjustment(
+      appendUnassignedRevenueGroups(
+        groupRows(rows, row => row.patientType),
+        unassignedServiceCharges,
+        unassignedServicePatientIds.size,
+        unassignedMedicineSales,
+        unassignedMedicinePatientIds.size
+      ),
+      priorPeriodCommission,
+      priorPeriodCommissionPatientIds.size
     ),
     expenses: data.expenses || [],
     // Already Audit Log payment rows, so every listed receipt carries the

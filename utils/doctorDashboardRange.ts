@@ -111,7 +111,9 @@ export const isTreatmentInDoctorDashboardRange = (
 };
 
 export const isCommissionEntryInDoctorDashboardRange = (
-  entry: DoctorEarningEntry,
+  // Only the payment date decides which period a ledger entry belongs to, so any
+  // commission row with a payment date (ledger rows, report rows) can be tested.
+  entry: Pick<DoctorEarningEntry, 'paymentDate'>,
   range: DoctorDashboardRange
 ): boolean => {
   const validRange = validateDoctorDashboardRange(range);

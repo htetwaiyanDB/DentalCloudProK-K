@@ -426,6 +426,59 @@ describe('monthly report', () => {
     expect(report.rows[0]).toMatchObject({ doctorCost: 12.5, totalCost: 12.5, netProfit: 87.5 });
   });
 
+  it('recognises clinician commission on the payment date, including balances of earlier treatments', () => {
+    const report = buildMonthlyReport({
+      records: [record({ doctor_id: 'doctor-1' })],
+      payments: [],
+      costSummaries: {},
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31',
+      doctorCommissions: [
+        // Commission collected on the treatment of this period (first payment + balance).
+        { treatmentId: 'treatment-1', paymentId: 'payment-1', doctorId: 'doctor-1', doctorName: 'Doctor One',
+          patientId: 'patient-1', paymentDate: '2026-07-10', earnings: 10 },
+        { treatmentId: 'treatment-1', paymentId: 'payment-3', doctorId: 'doctor-1', doctorName: 'Doctor One',
+          patientId: 'patient-1', paymentDate: '2026-07-31', earnings: 5 },
+        // Balance of an earlier treatment paid inside the period: this period's commission.
+        { treatmentId: 'treatment-0', paymentId: 'payment-2', doctorId: 'doctor-2', doctorName: 'Doctor Two',
+          patientId: 'patient-0', paymentDate: '2026-07-20', earnings: 7 },
+        // Payments outside the range are excluded, exactly like the Doctor dashboard range.
+        { treatmentId: 'treatment-1', paymentId: 'payment-0', doctorId: 'doctor-1', doctorName: 'Doctor One',
+          patientId: 'patient-1', paymentDate: '2026-06-25', earnings: 8 },
+        { treatmentId: 'treatment-1', paymentId: 'payment-4', doctorId: 'doctor-1', doctorName: 'Doctor One',
+          patientId: 'patient-1', paymentDate: '2026-08-01', earnings: 100 }
+      ]
+    });
+
+    expect(report.rows[0]).toMatchObject({ doctor: 'Doctor One', doctorCost: 15, totalCost: 15, netProfit: 85 });
+    expect(report.summary).toMatchObject({ doctorCost: 22, totalCost: 22, netProfit: 78 });
+    expect(report.byDoctor).toEqual([
+      expect.objectContaining({ name: 'Doctor One', doctorCost: 15, totalCost: 15, netProfit: 85 }),
+      expect.objectContaining({ name: 'Doctor Two', doctorCost: 7, totalCost: 7, treatments: 0, patients: 1, netProfit: -7 })
+    ]);
+    expect(report.byDoctor.reduce((sum, group) => sum + group.doctorCost, 0)).toBe(report.summary.doctorCost);
+    // Earlier-treatment commission has no production row here, so it stays visible
+    // in the performance sheets to keep their totals reconcilable.
+    expect(report.byTreatment).toEqual([
+      expect.objectContaining({ name: 'Crown', doctorCost: 15 }),
+      expect.objectContaining({ name: 'Commission on earlier treatments / No treatment in period', doctorCost: 7, patients: 1 })
+    ]);
+    expect(report.byPatientType.reduce((sum, group) => sum + group.doctorCost, 0)).toBe(report.summary.doctorCost);
+  });
+
+  it('treats an empty commission ledger as authoritative instead of stored treatment earnings', () => {
+    const report = buildMonthlyReport({
+      records: [record({ doctorEarnings: 20 })],
+      payments: [],
+      costSummaries: {},
+      doctorCommissions: []
+    });
+
+    expect(report.rows[0]).toMatchObject({ doctorCost: 0, totalCost: 0, netProfit: 100 });
+    expect(report.summary).toMatchObject({ doctorCost: 0, totalCost: 0 });
+    expect(report.byDoctor).toEqual([expect.objectContaining({ name: 'Doctor One', doctorCost: 0, totalCost: 0 })]);
+  });
+
   it('builds ranked analysis groups and safe filenames', () => {
     const report = buildMonthlyReport({ records: [record(), record({ id: 'treatment-2', patient_id: 'patient-2', cost: 200 })], payments: [], costSummaries: {} });
     expect(report.byTreatment[0]).toMatchObject({ name: 'Crown', treatments: 2, patients: 2, production: 300 });

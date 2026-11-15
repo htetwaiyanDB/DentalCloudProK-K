@@ -537,6 +537,17 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
       row[24] = Number(row[16]) > 0 ? 1 : 0;
       detailData.push(row);
     }
+    // Commission is recognised when the payment is received, so commission of
+    // earlier treatments paid in this period has no production row here. Keep it
+    // in the detail so the re-totalled row still equals the executive summary.
+    const priorCommission = round(report.summary.doctorCost - report.rows.reduce((sum, row) => sum + row.doctorCost, 0));
+    if (priorCommission !== 0) {
+      const row = adjustment('DOCTOR COMMISSION ON EARLIER TREATMENTS (no treatment counted)');
+      row[21] = priorCommission;
+      row[22] = priorCommission;
+      row[23] = -priorCommission;
+      detailData.push(row);
+    }
     if (report.summary.operatingExpenses !== 0) {
       const row = adjustment('OPERATING EXPENSES (no treatment counted)');
       row[22] = report.summary.operatingExpenses;

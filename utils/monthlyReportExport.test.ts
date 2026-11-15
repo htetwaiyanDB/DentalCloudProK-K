@@ -63,6 +63,34 @@ describe('monthly report Excel workbook', () => {
     expect(vi.mocked(autoTable).mock.calls[0][1].head?.[0]).toContain('Contribution (pre-MLS)');
   });
 
+  it('reconciles commission on earlier treatments with the report total', async () => {
+    const dated = buildMonthlyReport({
+      records: [{ id: 'treatment-1', location_id: 'loc', patient_id: 'patient-1', patient_name: 'Aye Aye',
+        doctor_name: 'Doctor One', teeth: [], description: 'Crown', cost: 100, doctorEarnings: 20, date: '2026-07-10' }],
+      payments: [], costSummaries: {}, dateFrom: metadata.dateFrom, dateTo: metadata.dateTo, costItems: [],
+      doctorCommissions: [
+        // Commission of the treatment dated in this period.
+        { treatmentId: 'treatment-1', paymentId: 'payment-1', doctorId: 'doctor-1', doctorName: 'Doctor One',
+          patientId: 'patient-1', paymentDate: '2026-07-10', earnings: 15 },
+        // Balance of an earlier treatment paid in this period: no production row here.
+        { treatmentId: 'old-treatment', paymentId: 'payment-2', doctorId: 'doctor-1', doctorName: 'Doctor One',
+          patientId: 'patient-9', paymentDate: '2026-07-20', earnings: 7 }
+      ]
+    });
+    expect(dated.summary.doctorCost).toBe(22);
+    const workbook = await buildMonthlyReportExcelWorkbook(dated, metadata);
+    const detail = workbook.Sheets['Treatment Detail'];
+    expect(detail.V5.v).toBe(15);
+    expect(detail.A6.v).toBe('DOCTOR COMMISSION ON EARLIER TREATMENTS (no treatment counted)');
+    expect(detail.V6.v).toBe(7);
+    expect(detail.W6.v).toBe(7);
+    expect(detail.X6.v).toBe(-7);
+    expect(detail.V7.v).toBe(dated.summary.doctorCost);
+    expect(detail.X7.v).toBe(dated.summary.netProfit);
+    expect(workbook.Sheets['By Clinician'].K5.v).toBe(22);
+    expect(workbook.Sheets['By Clinician'].K6.v).toBe(22);
+  });
+
   it('exports PDF costs with both dates and an explicit non-duplicating cost section', () => {
     const datedReport = buildMonthlyReport({ records: [], payments: [], costSummaries: {}, costItems: [{
       id: 'cost-1', expenseDate: '2026-07-15', treatmentDate: '2026-06-10', costType: 'lab', amount: 30,

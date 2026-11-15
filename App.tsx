@@ -88,6 +88,7 @@ import { resolvePaymentTreatmentsForCollection } from './utils/paymentTreatmentV
 import { toLocalDateInputValue } from './utils/patientCreationDate';
 import type { AuditFilter } from './utils/auditLogExport';
 import { filterAppointmentsForDoctor, resolveAppointmentQueryDoctorIds } from './utils/appointmentQueryScope';
+import { formatDoctorName } from './utils/doctorName';
 
 // Lazy Load Views
 const DashboardView = React.lazy(() => import('./components/DashboardView'));
@@ -4189,6 +4190,9 @@ const App: React.FC = () => {
   const currentDoctor = isDoctor && session?.doctor_id
     ? doctors.find((doctor) => doctor.id === session.doctor_id) || null
     : null;
+  // The doctor header shows the clinician's name instead of the login email: the
+  // email is only the auth username, while the dashboard belongs to the doctor.
+  const doctorHeaderName = formatDoctorName(currentDoctor?.name, currentUser);
   const currentDoctorLocationIds = currentDoctor
     ? Array.from(new Set([...(currentDoctor.location_ids || []), currentDoctor.location_id].filter(Boolean)))
     : [];
@@ -4240,7 +4244,7 @@ const App: React.FC = () => {
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h1 className="text-base font-semibold text-gray-900 truncate">{doctorViewTitle}</h1>
-              <p className="text-xs text-gray-500 truncate">{currentUser}</p>
+              <p className="text-xs text-gray-500 truncate">{doctorHeaderName}</p>
             </div>
             <div className="flex items-center gap-2">
               {currentView === 'finance' && (
@@ -4411,7 +4415,7 @@ const App: React.FC = () => {
                     const restrictedLocationId = getSessionRestrictedLocationId(session);
                     const queryLocationId = restrictedLocationId || (dashboardLocationId === ALL_BRANCHES_VALUE ? undefined : dashboardLocationId);
                     onProgress({ percent: 8, label: 'Loading treatments…' });
-                    const { records, allocationRecords } = await api.treatments.getMonthlyReportRecords({
+                    const { records, allocationRecords, doctorCommissions } = await api.treatments.getMonthlyReportRecords({
                       locationId: queryLocationId,
                       dateFrom,
                       dateTo,
@@ -4455,7 +4459,8 @@ const App: React.FC = () => {
                       dateTo,
                       appointments: reportAppointments,
                       medicineSales,
-                      expenses: operatingExpenses
+                      expenses: operatingExpenses,
+                      doctorCommissions
                     });
                     onProgress({ percent: 92, label: 'Report calculations complete' });
                     return report;

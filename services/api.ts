@@ -17,7 +17,7 @@ import { enumValue, finiteNumber, strictDateString, trimOptional, trimRequired }
 import { buildPatientCreatedAt } from '../utils/patientCreationDate';
 import { summarizeTreatmentCostRows } from '../utils/treatmentCostSummaries';
 import { buildPatientProfileUpdatePayload } from '../utils/patientProfileUpdate';
-import { chunkMonthlyReportPatientIds, type MonthlyReportSourceRecord, type MonthlyReportCostItem } from '../utils/monthlyReport';
+import { chunkMonthlyReportPatientIds, type MonthlyReportSourceRecord, type MonthlyReportCostItem, type MonthlyReportDoctorCommissionEntry } from '../utils/monthlyReport';
 import { chunkUniqueIds, mapWithConcurrency, REPORT_REQUEST_CONCURRENCY } from '../utils/reportBatching';
 import { normalizeMaterialCostPresetInputs, sortMaterialCostPresets } from '../utils/materialCostPresets';
 import { buildDoctorDirectWritePayload } from '../utils/doctorWritePayload';
@@ -660,6 +660,63 @@ const getDoctorEarningEntriesByTreatmentIds = async (treatmentIds: string[]) => 
     entriesByTreatment.set(row.treatment_id, entries);
   });
   return entriesByTreatment;
+};
+
+// The monthly report recognises doctor commission on the date the payment was
+// received, exactly like the Doctor dashboard, so the clinician sheet reads the
+// payment-dated commission ledger for the period instead of the lifetime
+// `treatments.doctor_earnings` snapshot.
+const getMonthlyReportCommissionEntries = async (
+  dateFrom: string,
+  dateTo: string,
+  locationId?: string
+): Promise<MonthlyReportDoctorCommissionEntry[] | undefined> => {
+  const entries: MonthlyReportDoctorCommissionEntry[] = [];
+  const pageSize = 1000;
+  for (let offset = 0; ; offset += pageSize) {
+    const buildQuery = (withDoctorName: boolean) => {
+      let query = supabase
+        .from('doctor_commission_entries')
+        .select(withDoctorName
+          ? 'treatment_id, payment_id, doctor_id, patient_id, payment_date, earnings, doctors(name)'
+          : 'treatment_id, payment_id, doctor_id, patient_id, payment_date, earnings')
+        .gte('payment_date', dateFrom)
+        .lte('payment_date', dateTo)
+        .order('payment_date', { ascending: true })
+        .order('id', { ascending: true })
+        .range(offset, offset + pageSize - 1);
+      if (locationId) query = query.eq('location_id', locationId);
+      return query;
+    };
+
+    let { data, error }: { data: any[] | null; error: any } = await buildQuery(true);
+    if (error && isOptionalRelationAccessError(error, ['doctors'])) {
+      const fallback = await buildQuery(false);
+      data = fallback.data;
+      error = fallback.error;
+    }
+    if (error) {
+      // A missing ledger (older deployment) or a transient failure must never be
+      // reported as "no commission in this period": returning `undefined` keeps
+      // the stored-earnings fallback instead of zeroing the clinician sheet.
+      const errorSummary = String(error.message || error).replace(/\s+/g, ' ').slice(0, 240);
+      console.warn('Unable to load doctor commission ledger for the monthly report; using stored treatment earnings.', errorSummary);
+      return undefined;
+    }
+
+    const page = data || [];
+    entries.push(...page.map((row: any) => ({
+      treatmentId: row.treatment_id,
+      paymentId: row.payment_id,
+      doctorId: row.doctor_id,
+      doctorName: row.doctors?.name || null,
+      patientId: row.patient_id,
+      paymentDate: row.payment_date,
+      earnings: Number(row.earnings || 0)
+    })));
+    if (page.length < pageSize) break;
+  }
+  return entries;
 };
 
 // The "Doctor Earned" column of the Audit Log → Payments tab is the stored
@@ -3896,7 +3953,11 @@ export const api = {
       dateFrom: string;
       dateTo: string;
       onProgress?: (completed: number, total: number) => void;
-    }): Promise<{ records: MonthlyReportSourceRecord[]; allocationRecords: MonthlyReportSourceRecord[] }> => {
+    }): Promise<{
+      records: MonthlyReportSourceRecord[];
+      allocationRecords: MonthlyReportSourceRecord[];
+      doctorCommissions?: MonthlyReportDoctorCommissionEntry[];
+    }> => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(dateTo) || dateFrom > dateTo) {
         throw new Error('A valid monthly report date range is required.');
       }
@@ -3972,8 +4033,9 @@ export const api = {
       };
 
       let records = await loadPages(dateFrom);
-      if (records.length === 0) return { records: [], allocationRecords: [] };
-      const entriesByTreatment = await getDoctorEarningEntriesByTreatmentIds(records.map(record => record.id));
+      const entriesByTreatment = records.length > 0
+        ? await getDoctorEarningEntriesByTreatmentIds(records.map(record => record.id))
+        : new Map<string, any[]>();
       records = records.map(record => {
         const entries = entriesByTreatment.get(record.id);
         if (!entries?.length) return record;
@@ -3986,14 +4048,33 @@ export const api = {
       });
       const patientBatches = chunkMonthlyReportPatientIds(records.map(record => record.patient_id));
       const allocationRecords: MonthlyReportSourceRecord[] = [];
-      onProgress?.(1, patientBatches.length + 1);
+      onProgress?.(1, patientBatches.length + 2);
       // Run bounded requests sequentially to avoid a burst of long PostgREST URLs at the proxy.
       for (let batchIndex = 0; batchIndex < patientBatches.length; batchIndex += 1) {
         const patientBatch = patientBatches[batchIndex];
         allocationRecords.push(...await loadPages(undefined, patientBatch));
-        onProgress?.(batchIndex + 2, patientBatches.length + 1);
+        onProgress?.(batchIndex + 2, patientBatches.length + 2);
       }
-      return { records, allocationRecords };
+
+      // Commission is payment-dated, so the clinician sheet also needs ledger rows
+      // for earlier treatments whose payment (balance/installment) landed inside
+      // this period. That makes the monthly report match the Doctor dashboard.
+      const doctorCommissions = await getMonthlyReportCommissionEntries(dateFrom, dateTo, locationId);
+      onProgress?.(patientBatches.length + 2, patientBatches.length + 2);
+      if (!doctorCommissions) return { records, allocationRecords };
+
+      const doctorNameByDoctorId = new Map<string, string>();
+      [...records, ...allocationRecords].forEach((record) => {
+        if (record.doctor_id && record.doctor_name) doctorNameByDoctorId.set(record.doctor_id, record.doctor_name);
+      });
+      return {
+        records,
+        allocationRecords,
+        doctorCommissions: doctorCommissions.map((entry) => ({
+          ...entry,
+          doctorName: entry.doctorName?.trim() || (entry.doctorId ? doctorNameByDoctorId.get(entry.doctorId) : undefined) || null
+        }))
+      };
     },
     getAllRecords: async (locationId?: string, options?: {
       limit?: number | null;
