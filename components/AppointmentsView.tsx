@@ -1,12 +1,11 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { Calendar, Plus, Loader2, Trash2, Clock, User, FileText, ChevronLeft, ChevronRight, List, CalendarDays, ClipboardList, UserRoundCog, CalendarCog, RotateCw, UserCog, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { Appointment, AppointmentPaymentReconciliation, Doctor, DoctorCorrectionPreview, DoctorCorrectionResult, Patient, TreatmentType } from '../types';
+import { Calendar, Plus, Loader2, Trash2, Clock, User, FileText, ChevronLeft, ChevronRight, List, CalendarDays, ClipboardList, UserRoundCog, CalendarCog, RotateCw, UserCog, AlertTriangle } from 'lucide-react';
+import { Appointment, Doctor, DoctorCorrectionPreview, DoctorCorrectionResult, Patient, TreatmentType } from '../types';
 import { exportAppointmentsToPDF } from '../utils/pdfExport';
 import { exportAppointmentsToExcel } from '../utils/excelExport';
 import { parseAppointmentClinicalFocus } from '../utils/appointmentClinicalFocus';
 import { compareAppointmentStatus } from '../utils/appointmentSorting';
-import { formatCurrency, type Currency } from '../utils/currency';
-import { filterAppointmentsByPendingPayment } from '../utils/appointmentPaymentStatus';
+import { type Currency } from '../utils/currency';
 import { formatDoctorName } from '../utils/doctorName';
 import Pagination from './Pagination';
 import { ConfirmDialog, Modal } from './Shared';
@@ -37,12 +36,6 @@ interface AppointmentsViewProps {
     options?: { skipClinicalFee?: boolean }
   ) => void;
   currency: Currency;
-  paymentReconciliation?: AppointmentPaymentReconciliation | null;
-  paymentReconciliationLoading?: boolean;
-  paymentReconciliationError?: string | null;
-  canRecordPayment?: boolean;
-  onRecordPayment?: (appointment: Appointment) => void;
-  recordingPaymentAppointmentId?: string | null;
   onViewChart: (appointment: Appointment) => void;
   onSelectPatient: (patient: Patient) => void;
   onEditPatientInfo?: (appointment: Appointment) => void;
@@ -92,13 +85,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   onEditAppointment,
   onDeleteAppointment,
   onUpdateStatus,
-  currency,
-  paymentReconciliation,
-  paymentReconciliationLoading = false,
-  paymentReconciliationError,
-  canRecordPayment = false,
-  onRecordPayment,
-  recordingPaymentAppointmentId,
   onViewChart,
   onSelectPatient,
   onEditPatientInfo,
@@ -130,7 +116,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [dateQuickFilter, setDateQuickFilter] = useState<'all' | 'tomorrow' | 'today' | 'custom'>(initialDateQuickFilter);
   const [dateFilter, setDateFilter] = useState('');
-  const [showPendingPaymentsOnly, setShowPendingPaymentsOnly] = useState(false);
   const [doctorFilter, setDoctorFilter] = useState('');
   const [treatmentFilter, setTreatmentFilter] = useState('');
   const [calendarDate, setCalendarDate] = useState(new Date());
@@ -172,7 +157,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     setDateQuickFilter(filter);
     setDateFilter('');
     setSelectedCalendarDate(null);
-    setShowPendingPaymentsOnly(false);
     resetAppointmentPages();
   };
 
@@ -181,7 +165,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     setDateFilter(isoDate);
     setSelectedCalendarDate(isoDate);
     setCalendarDate(parseLocalDate(isoDate));
-    setShowPendingPaymentsOnly(false);
     resetAppointmentPages();
   };
 
@@ -189,7 +172,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     setDateQuickFilter('all');
     setDateFilter('');
     setSelectedCalendarDate(null);
-    setShowPendingPaymentsOnly(false);
     resetAppointmentPages();
   };
 
@@ -197,7 +179,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     setDateQuickFilter(initialDateQuickFilter);
     setDateFilter('');
     setSelectedCalendarDate(null);
-    setShowPendingPaymentsOnly(false);
     resetAppointmentPages();
   }, [initialDateQuickFilter]);
 
@@ -335,8 +316,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
       : 'appointment-action-button inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold';
     const iconClassName = compact ? 'w-3.5 h-3.5' : 'w-3.5 h-3.5';
 
-    const iconOnlyClassName = 'inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1';
-
     return (
       <>
         {canViewChart && appointment.patient_id && (
@@ -354,24 +333,22 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           <button
             type="button"
             onClick={() => onEditPatientInfo(appointment)}
-            className={compact ? `${iconOnlyClassName} border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100` : `${buttonClassName} appointment-action-patient`}
+            className={`${buttonClassName} appointment-action-patient`}
             title="Edit patient information"
-            aria-label="Edit patient information"
           >
             <UserRoundCog className={iconClassName} />
-            {!compact && 'Edit Patient Info'}
+            Edit Patient Info
           </button>
         )}
         {canEdit && (
           <button
             type="button"
             onClick={() => onEditAppointment(appointment)}
-            className={compact ? `${iconOnlyClassName} border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100` : `${buttonClassName} appointment-action-appointment`}
+            className={`${buttonClassName} appointment-action-appointment`}
             title="Edit appointment information"
-            aria-label="Edit appointment information"
           >
             <CalendarCog className={iconClassName} />
-            {!compact && 'Edit Appointment Info'}
+            Edit Appointment Info
           </button>
         )}
         {canCorrectDoctor && appointment.patient_id && onPreviewDoctorCorrection && onCorrectDoctor && (
@@ -388,44 +365,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
       </>
     );
   };
-
-  const renderAppointmentPaymentStatus = (appointment: Appointment, compact = false) => {
-    if (appointment.status !== 'Completed' || !appointment.patient_id) return null;
-
-    const status = appointment.payment_status;
-    if (!status || status === 'NOT_APPLICABLE') return null;
-
-    const badgeClassName = compact
-      ? 'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold leading-none whitespace-nowrap'
-      : 'inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-bold';
-    const iconClassName = compact ? 'h-3 w-3' : 'h-3.5 w-3.5';
-    const dueAmount = Math.max(0, Number(appointment.payment_due || 0));
-
-    if (status === 'PAID') {
-      return (
-        <span className={`${badgeClassName} border-emerald-200 bg-emerald-50 text-emerald-700`} title="This visit is fully paid.">
-          <CheckCircle2 className={iconClassName} />
-          ✓ Paid
-        </span>
-      );
-    }
-
-    if (status === 'PARTIAL') {
-      return (
-        <span className={`${badgeClassName} border-amber-300 bg-amber-50 text-amber-800`} title="This visit is partially paid. Collect payment from Clinical Chart.">
-          Due: {formatCurrency(dueAmount, currency)}
-        </span>
-      );
-    }
-
-    return (
-      <span className={`${badgeClassName} border-orange-300 bg-orange-100 text-orange-800`} title="This completed visit has no payment record yet. Collect payment from Clinical Chart.">
-          <AlertTriangle className={iconClassName} />
-          Payment Pending
-      </span>
-    );
-  };
-
 
   const closeDoctorCorrection = () => {
     if (doctorCorrectionSubmitting) return;
@@ -621,50 +560,14 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     });
   }, [appointments, searchTerm, doctorFilter, treatmentFilter, doctorNameById]);
 
-  const activeReconciliationDate = dateQuickFilter === 'today'
-    ? todayLocalISO
-    : dateQuickFilter === 'tomorrow'
-      ? tomorrowISO
-      : dateQuickFilter === 'custom' && dateFilter
-        ? dateFilter
-        : '';
-  const dayReconciliation = paymentReconciliation && activeReconciliationDate &&
-    paymentReconciliation.date === activeReconciliationDate
-    ? paymentReconciliation
-    : null;
-  const pendingAppointmentIds = dayReconciliation?.pendingAppointmentIds || [];
-
-  const handleTogglePendingPayments = () => {
-    if (showPendingPaymentsOnly) {
-      setShowPendingPaymentsOnly(false);
-      resetAppointmentPages();
-      return;
-    }
-    if (!activeReconciliationDate) {
-      applyQuickDateFilter('today');
-    }
-    setShowPendingPaymentsOnly(true);
-    resetAppointmentPages();
-  };
-
   const filteredAppointments = useMemo(() => {
-    const scoped = searchFilteredAppointments.filter(apt => {
+    return searchFilteredAppointments.filter(apt => {
       if (dateQuickFilter === 'tomorrow') return apt.date === tomorrowISO;
       if (dateQuickFilter === 'today') return apt.date === todayLocalISO;
       if (dateQuickFilter === 'custom' && dateFilter) return apt.date === dateFilter;
       return true;
     });
-    if (!showPendingPaymentsOnly) return scoped;
-    return filterAppointmentsByPendingPayment(scoped, pendingAppointmentIds);
-  }, [
-    searchFilteredAppointments,
-    dateQuickFilter,
-    tomorrowISO,
-    todayLocalISO,
-    dateFilter,
-    showPendingPaymentsOnly,
-    pendingAppointmentIds
-  ]);
+  }, [searchFilteredAppointments, dateQuickFilter, tomorrowISO, todayLocalISO, dateFilter]);
 
   const sortedTableAppointments = useMemo(() => {
     return filteredAppointments
@@ -1011,56 +914,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
       </div>
     </div>
 
-      {viewMode === 'current' && activeReconciliationDate && (
-        <div className="border-b border-gray-100 bg-white px-4 py-3 md:px-6">
-          {paymentReconciliationLoading ? (
-            <div className="flex items-center gap-2 text-xs font-semibold text-gray-500" aria-live="polite">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading payment summary...
-            </div>
-          ) : paymentReconciliationError ? (
-            <div role="alert" className="flex items-center gap-2 text-xs font-semibold text-amber-700">
-              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-              {paymentReconciliationError}
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
-                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-700">
-                    <span className="mr-1 text-slate-500">Completed</span>{dayReconciliation?.completed ?? 0}
-                  </span>
-                  <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-emerald-800">
-                    <span className="mr-1 text-emerald-700">Paid</span>{dayReconciliation?.paid ?? 0}
-                  </span>
-                  <span className={`rounded-lg border px-2.5 py-1.5 ${
-                    (dayReconciliation?.pending ?? 0) > 0
-                      ? 'border-orange-300 bg-orange-100 text-orange-800'
-                      : 'border-gray-200 bg-gray-50 text-gray-600'
-                  }`}>
-                    <span className="mr-1">Payment pending</span>{dayReconciliation?.pending ?? 0}
-                  </span>
-                </div>
-                {((dayReconciliation?.pending ?? 0) > 0 || showPendingPaymentsOnly) && (
-                  <button
-                    type="button"
-                    onClick={handleTogglePendingPayments}
-                    className={`self-start rounded-lg border px-3 py-2 text-xs font-bold transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1 ${
-                      showPendingPaymentsOnly
-                        ? 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-                        : 'border-orange-300 bg-orange-600 text-white hover:bg-orange-700'
-                    }`}
-                  >
-                    {showPendingPaymentsOnly ? 'Show All Appointments' : 'View Pending Payments'}
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-
       {loading ? (
         <div className="flex-1 flex items-center justify-center p-12">
           <Loader2 className="animate-spin text-[var(--hover-600)] w-10 h-10" />
@@ -1154,9 +1007,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                                 {appointment.status}
                               </span>
                             </div>
-                            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-                              {renderAppointmentPaymentStatus(appointment, true)}
-                            </div>
                           </div>
                         ))}
                       </div>
@@ -1169,7 +1019,7 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                 return (
                   <div className="rounded-2xl border border-indigo-200 bg-white shadow-sm overflow-hidden">
                     <div className="max-h-[calc(100vh-260px)] overflow-auto">
-                      <table className="min-w-[1080px] w-full text-sm">
+                      <table className="min-w-[960px] w-full text-sm">
                         <thead className="bg-indigo-50 border-b border-indigo-200">
                           <tr className="text-indigo-700">
                             <th className="sticky top-0 z-20 bg-indigo-50 px-3 py-3 text-left font-bold uppercase text-xs tracking-wide">No.</th>
@@ -1179,17 +1029,14 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                             <th className="sticky top-0 z-20 bg-indigo-50 px-3 py-3 text-left font-bold uppercase text-xs tracking-wide">Pt Name</th>
                             <th className="sticky top-0 z-20 bg-indigo-50 px-3 py-3 text-left font-bold uppercase text-xs tracking-wide">Tx</th>
                             <th className="sticky top-0 z-20 bg-indigo-50 px-3 py-3 text-left font-bold uppercase text-xs tracking-wide">Status</th>
-                            <th className="sticky top-0 z-20 bg-indigo-50 px-3 py-3 text-left font-bold uppercase text-xs tracking-wide">Payment</th>
                             <th className="sticky top-0 z-20 bg-indigo-50 px-3 py-3 text-left font-bold uppercase text-xs tracking-wide">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
                           {tableRows.length === 0 ? (
                             <tr>
-                              <td colSpan={9} className="px-3 py-8 text-center text-gray-400 italic">
-                                {showPendingPaymentsOnly
-                                  ? 'No payment-pending appointments found for this day.'
-                                  : `No appointments found${dateQuickFilter === 'all' ? '.' : ` for ${dateQuickFilter}.`}`}
+                              <td colSpan={8} className="px-3 py-8 text-center text-gray-400 italic">
+                                No appointments found{dateQuickFilter === 'all' ? '.' : ` for ${dateQuickFilter}.`}
                               </td>
                             </tr>
                           ) : (
@@ -1230,11 +1077,8 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                                       <option value="Cancelled">Cancelled</option>
                                     </select>
                                   </td>
-                                  <td className="px-3 py-3 align-top min-w-[138px]">
-                                    {renderAppointmentPaymentStatus(appointment, true)}
-                                  </td>
-                                  <td className="px-3 py-3 align-top whitespace-nowrap">
-                                    <div className="flex items-center gap-1.5">
+                                  <td className="px-3 py-3 align-top">
+                                    <div className="flex flex-wrap items-center gap-1.5">
                                       {renderAppointmentActionButtons(appointment, true)}
                                       {isNewPatientAppointment(appointment) && onConvertLead && (
                                         <button
@@ -1455,7 +1299,6 @@ const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                                 <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
                               </button>
                             )}
-                            {renderAppointmentPaymentStatus(appointment, true)}
                           </div>
                         </div>
                       );
