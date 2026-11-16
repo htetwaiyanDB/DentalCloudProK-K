@@ -115,15 +115,11 @@ const summarizeVisitPayment = ({
     }
   }
 
-  const hasVisitPayment = patientPayments.some((payment) => (
-    getPaymentTreatmentIds(payment).some((treatmentId) => visitTreatmentIds.has(treatmentId)) ||
-    (!getPaymentTreatmentIds(payment).length && payment.date === appointment.date)
-  ));
-
-  // A completed visit with no priced treatment (for example a waived or
-  // service-fee-only visit) can only be considered paid when a payment exists.
+  // Appointment payment status is for treatment charges only. A consultation,
+  // waived visit, or other completed visit with no priced treatment must not
+  // be shown as unpaid simply because it has no payment receipt.
   const paymentStatus: AppointmentPaymentStatus = visitTotal <= 0
-    ? (hasVisitPayment ? 'PAID' : 'PENDING')
+    ? 'NOT_APPLICABLE'
     : paidAmount >= visitTotal - 0.005
       ? 'PAID'
       : paidAmount > 0
@@ -214,12 +210,11 @@ export const buildAppointmentPaymentReconciliation = ({
     const summary = summarizeAppointmentPayment({ appointment, treatments, payments });
     if (summary.payment_status === 'PAID') {
       paid += 1;
-      return;
+    } else if (summary.payment_status === 'PENDING' || summary.payment_status === 'PARTIAL') {
+      pending += 1;
+      pendingAppointmentIds.push(appointment.id);
+      if (summary.payment_status === 'PARTIAL') partial += 1;
     }
-
-    pending += 1;
-    pendingAppointmentIds.push(appointment.id);
-    if (summary.payment_status === 'PARTIAL') partial += 1;
   });
 
   return {
@@ -249,7 +244,7 @@ export const applyPaymentToAppointmentSummary = (
   if (appointment.status !== 'Completed' || !appointment.patient_id) {
     paymentStatus = 'NOT_APPLICABLE';
   } else if (visitTotal <= 0) {
-    paymentStatus = paidAmount > 0 ? 'PAID' : appointment.payment_status || 'PENDING';
+    paymentStatus = 'NOT_APPLICABLE';
   } else if (paymentDue <= 0.005) {
     paymentStatus = 'PAID';
   } else {

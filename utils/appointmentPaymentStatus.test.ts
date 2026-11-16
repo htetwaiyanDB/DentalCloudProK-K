@@ -102,6 +102,18 @@ describe('appointment payment status', () => {
     });
     expect(scheduled.payment_status).toBe('NOT_APPLICABLE');
   });
+
+  it('does not flag a completed no-charge visit as payment pending', () => {
+    const summary = summarizeAppointmentPayment({
+      appointment: appointment(),
+      treatments: [],
+      payments: []
+    });
+
+    expect(summary.payment_status).toBe('NOT_APPLICABLE');
+    expect(summary.visit_total).toBe(0);
+    expect(summary.payment_due).toBe(0);
+  });
 });
 describe('daily appointment payment reconciliation', () => {
   const paidAppointment = appointment({ id: 'appointment-paid', patient_id: 'patient-paid', time: '09:00' });
@@ -158,6 +170,20 @@ describe('daily appointment payment reconciliation', () => {
 
     const filtered = filterAppointmentsByPendingPayment(rows, reconciliation.pendingAppointmentIds);
     expect(filtered.map((row) => row.id)).toEqual(['appointment-partial', 'appointment-pending']);
+  });
+
+  it('excludes completed no-charge visits from the pending reconciliation count', () => {
+    const noChargeAppointment = appointment({ id: 'appointment-no-charge', patient_id: 'patient-no-charge', time: '12:00' });
+    const reconciliation = buildAppointmentPaymentReconciliation({
+      appointments: [pendingAppointment, noChargeAppointment],
+      treatments: [treatment({ id: 'treatment-pending', patient_id: 'patient-pending', appointment_id: 'appointment-pending', cost: 50_000 })],
+      payments: [],
+      date: '2026-11-16'
+    });
+
+    expect(reconciliation.completed).toBe(2);
+    expect(reconciliation.pending).toBe(1);
+    expect(reconciliation.pendingAppointmentIds).toEqual(['appointment-pending']);
   });
 
   it('updates a row immediately after a payment is recorded', () => {
