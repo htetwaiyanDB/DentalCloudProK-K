@@ -2,6 +2,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { formatCurrency } from './currency';
 import { formatAuditCreatedAt } from './auditLogExport';
+import { formatDoctorName } from './doctorName';
 import { groupMonthlyReportDetailRows, monthlyReportFilename, type MonthlyReport, type MonthlyReportGroup, type MonthlyReportMetadata, type MonthlyReportPayment } from './monthlyReport';
 
 const percentage = (value: number): string => `${(value * 100).toFixed(1)}%`;
@@ -591,6 +592,43 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   styleProfitCell(detailSheet, `X${5 + detailData.length}`, Number(detailSheet[`X${5 + detailData.length}`].v), true);
   XLSX.utils.book_append_sheet(workbook, detailSheet, 'Treatment Detail');
 
+  if (report.payments !== undefined) {
+    const paymentRecords = sortReportPayments(report.payments);
+    const paymentRows = paymentRecords.map(payment => [
+      paymentLogDateTime(payment),
+      payment.receiptNumber || 'Not recorded',
+      payment.patient_name?.trim() || 'Unknown patient',
+      payment.patient_type?.trim() || 'Not assigned',
+      payment.type,
+      paymentMethodLabel(payment.paymentMethod),
+      payment.amount,
+      payment.balanceBefore ?? '',
+      payment.remainingBalance,
+      (payment.treatmentIds || []).length,
+      formatDoctorName(payment._doctorName, 'Not recorded'),
+      payment.doctorEarned ?? 0,
+      payment.voidedAt ? 'Voided' : 'Active',
+      payment.createdByUserName?.trim() || 'Not recorded'
+    ]);
+    const activePaymentTotal = paymentRecords
+      .filter(payment => !payment.voidedAt)
+      .reduce((total, payment) => total + (Number.isFinite(payment.amount) ? payment.amount : 0), 0);
+    const paymentSheet: any = XLSX.utils.aoa_to_sheet([
+      ['PAYMENTS RECEIVED', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+      [`${reportSubtitle(metadata)} | Same receipts, recorded date/time and doctor commission as the Audit Log → Payments tab | Voided payments are listed but excluded from the total`, '', '', '', '', '', '', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+      ['Date / Time', 'Receipt No.', 'Patient', 'Patient Type', 'Payment Type', 'Method', 'Amount', 'Balance Before', 'Remaining Balance', 'Treatments', 'Doctor', 'Doctor Earned', 'Status', 'Recorded By'],
+      ...paymentRows,
+      ['TOTAL (active payments)', '', '', '', '', '', activePaymentTotal, '', '', '', '', '', '', '']
+    ]);
+    paymentSheet['!merges'] = [XLSX.utils.decode_range('A1:N1'), XLSX.utils.decode_range('A2:N2')];
+    configureTableSheet(paymentSheet, 4, paymentRows.length, 'N', [22, 20, 25, 16, 14, 17, 16, 16, 18, 12, 28, 15, 12, 22]);
+    setNumberFormat(XLSX, paymentSheet, 5, 5 + paymentRows.length, [6, 7, 8, 11], currency);
+    styleReportBanner(XLSX, paymentSheet, 'N');
+    styleTable(XLSX, paymentSheet, 4, paymentRows.length, 5 + paymentRows.length, 'N', [6, 7, 8, 9, 11], [4, 5, 12]);
+    XLSX.utils.book_append_sheet(workbook, paymentSheet, 'Payments');
+  }
+
   if (report.costItems !== undefined) {
     const costData = report.costItems.map(item => [item.expenseDate, item.treatmentDate, item.patientName,
       item.treatmentLabel, item.doctorName, item.patientType, item.costType, item.amount, item.sourceType, item.sourceId, item.id]);
@@ -654,42 +692,6 @@ export const buildMonthlyReportExcelWorkbook = async (report: MonthlyReport, met
   styleReportBanner(XLSX, expenseSheet, 'D');
   styleTable(XLSX, expenseSheet, 4, expenseRows.length, 5 + expenseRows.length, 'D', [3]);
   XLSX.utils.book_append_sheet(workbook, expenseSheet, 'Operating Expenses');
-
-  if (report.payments !== undefined) {
-    const paymentRecords = sortReportPayments(report.payments);
-    const paymentRows = paymentRecords.map(payment => [
-      paymentLogDateTime(payment),
-      payment.receiptNumber || 'Not recorded',
-      payment.patient_name?.trim() || 'Unknown patient',
-      payment.patient_type?.trim() || 'Not assigned',
-      payment.type,
-      paymentMethodLabel(payment.paymentMethod),
-      payment.amount,
-      payment.balanceBefore ?? '',
-      payment.remainingBalance,
-      (payment.treatmentIds || []).length,
-      payment.doctorEarned ?? 0,
-      payment.voidedAt ? 'Voided' : 'Active',
-      payment.createdByUserName?.trim() || 'Not recorded'
-    ]);
-    const activePaymentTotal = paymentRecords
-      .filter(payment => !payment.voidedAt)
-      .reduce((total, payment) => total + (Number.isFinite(payment.amount) ? payment.amount : 0), 0);
-    const paymentSheet: any = XLSX.utils.aoa_to_sheet([
-      ['PAYMENTS RECEIVED', '', '', '', '', '', '', '', '', '', '', '', ''],
-      [`${reportSubtitle(metadata)} | Same receipts, recorded date/time and doctor commission as the Audit Log → Payments tab | Voided payments are listed but excluded from the total`, '', '', '', '', '', '', '', '', '', '', '', ''],
-      ['', '', '', '', '', '', '', '', '', '', '', '', ''],
-      ['Date / Time', 'Receipt No.', 'Patient', 'Patient Type', 'Payment Type', 'Method', 'Amount', 'Balance Before', 'Remaining Balance', 'Treatments', 'Doctor Earned', 'Status', 'Recorded By'],
-      ...paymentRows,
-      ['TOTAL (active payments)', '', '', '', '', '', activePaymentTotal, '', '', '', '', '', '']
-    ]);
-    paymentSheet['!merges'] = [XLSX.utils.decode_range('A1:M1'), XLSX.utils.decode_range('A2:M2')];
-    configureTableSheet(paymentSheet, 4, paymentRows.length, 'M', [22, 20, 25, 16, 14, 17, 16, 16, 18, 12, 15, 12, 22]);
-    setNumberFormat(XLSX, paymentSheet, 5, 5 + paymentRows.length, [6, 7, 8, 10], currency);
-    styleReportBanner(XLSX, paymentSheet, 'M');
-    styleTable(XLSX, paymentSheet, 4, paymentRows.length, 5 + paymentRows.length, 'M', [6, 7, 8, 9, 10], [4, 5, 11]);
-    XLSX.utils.book_append_sheet(workbook, paymentSheet, 'Payments');
-  }
 
   return workbook;
 };

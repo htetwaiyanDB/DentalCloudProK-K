@@ -3,6 +3,7 @@ import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx-js-style';
 import { formatCurrency } from './currency';
 import { formatAuditCreatedAt } from './auditLogExport';
+import { formatDoctorName } from './doctorName';
 import { buildMonthlyReport, type MonthlyReport, type MonthlyReportMetadata } from './monthlyReport';
 import { buildMonthlyReportExcelWorkbook, exportMonthlyReportToPDF } from './monthlyReportExport';
 
@@ -410,12 +411,12 @@ describe('monthly report Excel workbook', () => {
         { id: 'payment-1', patientId: 'patient-1', patient_name: 'Aye Aye', patient_type: 'Walk-in',
           amount: 60000, date: '2026-07-10', type: 'PARTIAL', remainingBalance: 40000, balanceBefore: 100000,
           paymentMethod: 'CASH', treatmentIds: ['treatment-1'], receiptNumber: 'R-1001', createdByUserName: 'Staff A',
-          doctorEarned: 6000 },
+          _doctorName: 'Doctor One', doctorEarned: 6000 },
         { id: 'payment-2', patientId: 'patient-2', patient_name: 'Bo Bo', patient_type: 'Member',
           amount: 30000, date: '2026-07-12', type: 'FULL', remainingBalance: 0,
           paymentMethod: 'KPAY', treatmentIds: ['treatment-2'], receiptNumber: 'R-1002', createdByUserName: 'Staff B',
           createdAt: '2026-07-12T03:15:00Z',
-          doctorEarned: 3000 },
+          _doctorName: 'Doctor Two', doctorEarned: 3000 },
         { id: 'payment-3', patientId: 'patient-3', patient_name: 'Voided Patient', amount: 5000, date: '2026-07-13',
           type: 'PARTIAL', remainingBalance: 5000, voidedAt: '2026-07-14T00:00:00Z' },
         // A collection against an older remaining balance: it has no treatment
@@ -427,13 +428,19 @@ describe('monthly report Excel workbook', () => {
       ]
     };
     const workbook = await buildMonthlyReportExcelWorkbook(reportWithPayments, metadata);
-    expect(workbook.SheetNames).toContain('Payments');
+    // The Payments sheet sits directly behind Treatment Detail so the receipts
+    // can be checked against the treatments they belong to without scrolling tabs.
+    expect(workbook.SheetNames).toEqual([
+      'Executive Summary', 'Treatment Detail', 'Payments', 'By Treatment', 'By Clinician', 'By Patient Type',
+      'Operating Expenses'
+    ]);
     const sheet = workbook.Sheets['Payments'];
 
     expect(sheet.A4.v).toBe('Date / Time');
     expect(sheet.G4.v).toBe('Amount');
-    expect(sheet.K4.v).toBe('Doctor Earned');
-    expect(sheet.L4.v).toBe('Status');
+    expect(sheet.K4.v).toBe('Doctor');
+    expect(sheet.L4.v).toBe('Doctor Earned');
+    expect(sheet.M4.v).toBe('Status');
     expect(sheet.A5.v).toBe('2026-07-10');
     // The date column shows the recorded date/time exactly as the Audit Log
     // payments tab renders it for the same receipt.
@@ -441,12 +448,17 @@ describe('monthly report Excel workbook', () => {
     expect(sheet.C5.v).toBe('Aye Aye');
     expect(sheet.F5.v).toBe('CASH');
     expect(sheet.G5.v).toBe(60000);
+    // The doctor column names the clinician who earned the commission, so the
+    // admin can see which doctor was paid by each receipt.
+    expect(sheet.K5.v).toBe(formatDoctorName('Doctor One'));
+    expect(sheet.K6.v).toBe(formatDoctorName('Doctor Two'));
+    expect(sheet.K8.v).toBe('Not recorded');
     // Doctor commission follows the receipt so the sheet matches the payment log.
-    expect(sheet.K5.v).toBe(6000);
-    expect(sheet.K6.v).toBe(3000);
-    expect(sheet.L5.v).toBe('Active');
-    expect(sheet.L6.v).toBe('Active');
-    expect(sheet.L7.v).toBe('Voided');
+    expect(sheet.L5.v).toBe(6000);
+    expect(sheet.L6.v).toBe(3000);
+    expect(sheet.M5.v).toBe('Active');
+    expect(sheet.M6.v).toBe('Active');
+    expect(sheet.M7.v).toBe('Voided');
     // Balance-only collection is listed with its balance snapshot even though
     // it is not tied to any treatment in this report.
     expect(sheet.A8.v).toBe('2026-07-15');
@@ -455,7 +467,7 @@ describe('monthly report Excel workbook', () => {
     expect(sheet.H8.v).toBe(25000);
     expect(sheet.I8.v).toBe(0);
     expect(sheet.J8.v).toBe(0);
-    expect(sheet.L8.v).toBe('Active');
+    expect(sheet.M8.v).toBe('Active');
     expect(sheet.A9.v).toBe('TOTAL (active payments)');
     expect(sheet.G9.v).toBe(115000);
 
