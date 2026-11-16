@@ -54,7 +54,8 @@ import {
   PatientType,
   AppointmentType,
   TreatmentChargeLine,
-  PaymentReceiptSnapshot
+  PaymentReceiptSnapshot,
+  AppointmentPaymentReconciliation
 } from './types';
 import {
   DEFAULT_PATIENT_TYPE_NAME,
@@ -89,6 +90,7 @@ import { toLocalDateInputValue } from './utils/patientCreationDate';
 import type { AuditFilter } from './utils/auditLogExport';
 import { filterAppointmentsForDoctor, resolveAppointmentQueryDoctorIds } from './utils/appointmentQueryScope';
 import { formatDoctorName, normalizeDoctorName } from './utils/doctorName';
+import { applyPaymentToAppointmentSummary } from './utils/appointmentPaymentStatus';
 
 // Lazy Load Views
 const DashboardView = React.lazy(() => import('./components/DashboardView'));
@@ -424,6 +426,11 @@ const App: React.FC = () => {
   const [appointmentPageAppointments, setAppointmentPageAppointments] = useState<Appointment[]>([]);
   const [appointmentPageTotal, setAppointmentPageTotal] = useState(0);
   const [appointmentPageLoading, setAppointmentPageLoading] = useState(false);
+  const [appointmentPageReconciliation, setAppointmentPageReconciliation] = useState<AppointmentPaymentReconciliation | null>(null);
+  const [appointmentPageReconciliationLoading, setAppointmentPageReconciliationLoading] = useState(false);
+  const [appointmentPageReconciliationError, setAppointmentPageReconciliationError] = useState<string | null>(null);
+  const [paymentSourceAppointmentId, setPaymentSourceAppointmentId] = useState<string | null>(null);
+  const [recordingPaymentAppointmentId, setRecordingPaymentAppointmentId] = useState<string | null>(null);
   const [appointmentPageRefreshKey, setAppointmentPageRefreshKey] = useState(0);
   const appointmentPageRequestRef = useRef(0);
   const [appointmentRescheduleLogs, setAppointmentRescheduleLogs] = useState<AppointmentRescheduleLog[]>([]);
@@ -1614,31 +1621,63 @@ const App: React.FC = () => {
       setAppointmentPageAppointments([]);
       setAppointmentPageTotal(0);
       setAppointmentPageLoading(false);
+      setAppointmentPageReconciliation(null);
+      setAppointmentPageReconciliationError(null);
+      setAppointmentPageReconciliationLoading(false);
       return;
     }
     const requestId = ++appointmentPageRequestRef.current;
     setAppointmentPageLoading(true);
+    if (date) {
+      setAppointmentPageReconciliationLoading(true);
+      setAppointmentPageReconciliationError(null);
+    } else {
+      setAppointmentPageReconciliation(null);
+      setAppointmentPageReconciliationError(null);
+      setAppointmentPageReconciliationLoading(false);
+    }
     try {
-      const result = await api.appointments.list(locationId, {
-        date,
-        dateFrom: query.viewMode === 'calendar' ? query.calendarDateFrom : undefined,
-        dateTo: query.viewMode === 'calendar' ? query.calendarDateTo : undefined,
-        page: query.viewMode === 'calendar' ? 1 : query.page,
-        pageSize: query.viewMode === 'calendar' ? 1000 : 100,
-        search: query.search,
-        doctorIds,
-        treatment: query.treatment
-      });
+      const reconciliationPromise: Promise<AppointmentPaymentReconciliation | null> = date
+        ? api.appointments.getPaymentReconciliation(locationId, { date, doctorIds }).catch((reconciliationError) => {
+            console.warn('Error fetching appointment payment reconciliation:', reconciliationError);
+            return null;
+          })
+        : Promise.resolve(null);
+      const [result, reconciliation] = await Promise.all([
+        api.appointments.list(locationId, {
+          date,
+          dateFrom: query.viewMode === 'calendar' ? query.calendarDateFrom : undefined,
+          dateTo: query.viewMode === 'calendar' ? query.calendarDateTo : undefined,
+          page: query.viewMode === 'calendar' ? 1 : query.page,
+          pageSize: query.viewMode === 'calendar' ? 1000 : 100,
+          search: query.search,
+          doctorIds,
+          treatment: query.treatment,
+          // Month overview rows do not need per-row payment badges. Payment
+          // reconciliation is loaded for the selected day instead.
+          includePaymentStatus: query.viewMode !== 'calendar'
+        }),
+        reconciliationPromise
+      ]);
       if (requestId !== appointmentPageRequestRef.current) return;
       setAppointmentPageAppointments(filterAppointmentsForDoctor(result.appointments, session?.role, session?.doctor_id));
       setAppointmentPageTotal(result.total);
+      if (date) {
+        setAppointmentPageReconciliation(reconciliation);
+        setAppointmentPageReconciliationError(reconciliation ? null : 'Payment summary is unavailable. Refresh to try again.');
+      }
     } catch (err) {
       if (requestId !== appointmentPageRequestRef.current) return;
       console.warn('Error fetching appointment page:', err);
       setAppointmentPageAppointments([]);
       setAppointmentPageTotal(0);
+      setAppointmentPageReconciliation(null);
+      setAppointmentPageReconciliationError(date ? 'Payment summary is unavailable. Refresh to try again.' : null);
     } finally {
-      if (requestId === appointmentPageRequestRef.current) setAppointmentPageLoading(false);
+      if (requestId === appointmentPageRequestRef.current) {
+        setAppointmentPageLoading(false);
+        setAppointmentPageReconciliationLoading(false);
+      }
     }
   }, [currentLocationId, doctors, appointmentPageRefreshKey]);
 
@@ -2546,9 +2585,14 @@ const App: React.FC = () => {
     setShowReceipt(true);
   };
 
-  const openPaymentModalWithCategory = (category: 'NEW' | 'RETURNING' | null, explicitServiceFeeAmount?: number) => {
-    const currentBatchForPatient = latestTreatmentBatch.filter(
-      (record) => record.patient_id === selectedPatient?.id
+  const openPaymentModalWithCategory = (
+    category: 'NEW' | 'RETURNING' | null,
+    explicitServiceFeeAmount?: number,
+    context?: { patient?: Patient | null; treatments?: ClinicalRecord[] }
+  ) => {
+    const targetPatient = context?.patient ?? selectedPatient;
+    const currentBatchForPatient = (context?.treatments ?? latestTreatmentBatch).filter(
+      (record) => record.patient_id === targetPatient?.id
     );
     const currentTreatmentTotal = currentBatchForPatient.reduce(
       (sum, record) => sum + Math.max(0, Number(record.cost || 0)),
@@ -2563,12 +2607,12 @@ const App: React.FC = () => {
           : 0;
     const previousBalance = Math.max(
       0,
-      Math.max(0, Number(selectedPatient?.balance || 0)) - currentTreatmentTotal
+      Math.max(0, Number(targetPatient?.balance || 0)) - currentTreatmentTotal
     );
 
     setPaymentDraft({
       treatments: currentBatchForPatient,
-      amountTendered: Math.max(0, Number(selectedPatient?.balance || 0)) + serviceFeeAmount,
+      amountTendered: Math.max(0, Number(targetPatient?.balance || 0)) + serviceFeeAmount,
       previousBalance,
       currentTreatmentTotal,
       serviceFeeAmount,
@@ -2623,6 +2667,7 @@ const App: React.FC = () => {
   };
 
   const handleOpenPaymentModal = (_treatments: ClinicalRecord[]) => {
+    setPaymentSourceAppointmentId(null);
     const preview = resolvePaymentServiceFeePreview();
 
     if (preview) {
@@ -2637,6 +2682,7 @@ const App: React.FC = () => {
 
   const handleOpenServiceFeePayment = () => {
     if (!selectedPatient) return;
+    setPaymentSourceAppointmentId(null);
 
     if (Math.max(0, Number(selectedPatient.balance || 0)) > 0) {
       handleOpenPaymentModal(treatmentHistory);
@@ -2650,6 +2696,70 @@ const App: React.FC = () => {
       setShowPaymentCategoryModal(true);
     }
   };
+  const handleRecordPaymentForAppointment = async (appointment: Appointment) => {
+    if (appointment.status !== 'Completed' || !appointment.patient_id) return;
+
+    const session = auth.getSession();
+    if (session?.role === 'doctor') {
+      setToast({ message: 'Doctors cannot record payments.', type: 'error', show: true });
+      return;
+    }
+
+    setRecordingPaymentAppointmentId(appointment.id);
+    try {
+      let patient = patients.find((candidate) => candidate.id === appointment.patient_id) || null;
+      if (!patient) {
+        const locationPatients = await api.patients.getAll(appointment.location_id || currentLocationId || undefined);
+        patient = locationPatients.find((candidate) => candidate.id === appointment.patient_id) || null;
+      }
+      if (!patient) {
+        throw new Error('Patient record is not available in this branch. Refresh and try again.');
+      }
+
+      // Load the visit's treatments so the existing payment form is prefilled
+      // with exactly what this appointment produced.
+      const history = await api.treatments.getHistory(patient.id, { includeCommissionEntries: false });
+      const visitTreatments = history.filter((treatment) => (
+        treatment.appointment_id === appointment.id ||
+        (!treatment.appointment_id && treatment.date === appointment.date)
+      ));
+      const hasPreviousVisit = history.some((treatment) => treatment.date < appointment.date);
+      const category: 'NEW' | 'RETURNING' = hasPreviousVisit ? 'RETURNING' : 'NEW';
+      const configuredFee = category === 'RETURNING'
+        ? clinicalFeeReturningPatientAmount
+        : clinicalFeeNewPatientAmount;
+      // The per-visit clinical fee is already folded into the patient balance
+      // when the appointment was completed, so never charge it a second time.
+      const suggestedFeeAmount = appointment.clinical_fee_status === 'APPLIED'
+        ? 0
+        : getSuggestedServiceFeeAmount({
+            enabled: clinicalFeeEnabled,
+            configuredAmount: Math.max(0, configuredFee),
+            hasRecordedFeeForVisit: hasRecordedServiceFeeForVisit(paymentRecords, patient.id, appointment.date)
+          });
+
+      setSelectedPatient(patient);
+      setSelectedDoctorId((appointment.doctor_id || '').trim());
+      setLatestTreatmentBatch(visitTreatments);
+      setPaymentSourceAppointmentId(appointment.id);
+
+      if (suggestedFeeAmount > 0) {
+        setPaymentServiceFeePreview({ category, feeAmount: suggestedFeeAmount, hasSuggestedFee: true });
+        setManualServiceFeeAmount(String(suggestedFeeAmount));
+        setShowPaymentCategoryModal(true);
+      } else {
+        openPaymentModalWithCategory(null, 0, { patient, treatments: visitTreatments });
+      }
+    } catch (error: any) {
+      console.warn('Could not open the appointment payment form:', error);
+      setPaymentSourceAppointmentId(null);
+      setToast({ message: error?.message || 'Could not open the payment form.', type: 'error', show: true });
+    } finally {
+      setRecordingPaymentAppointmentId(null);
+    }
+  };
+
+
 
   const resetAppointmentForm = () => {
     setAppointmentPatientMode('registered');
@@ -3877,6 +3987,40 @@ const App: React.FC = () => {
       setActivePaymentReceiptSnapshot(null);
       setSelectedTreatmentsForReceipt([]);
       setSelectedMedicineSalesForReceipt([]);
+
+      // Reflect the collection immediately for the appointment row that opened
+      // this payment form, then refresh the page from the database.
+      if (paymentSourceAppointmentId) {
+        const paidAppointment = appointmentPageAppointments.find(
+          (appointment) => appointment.id === paymentSourceAppointmentId
+        );
+        if (paidAppointment) {
+          const updatedAppointment = applyPaymentToAppointmentSummary(paidAppointment, paymentAmountTendered);
+          setAppointmentPageAppointments((previous) => previous.map((appointment) => (
+            appointment.id === paidAppointment.id ? updatedAppointment : appointment
+          )));
+          setAppointmentPageReconciliation((previous) => {
+            if (!previous || previous.date !== paidAppointment.date) return previous;
+            const wasPaid = paidAppointment.payment_status === 'PAID';
+            const isPaid = updatedAppointment.payment_status === 'PAID';
+            if (wasPaid || !isPaid) {
+              if (!wasPaid && updatedAppointment.payment_status === 'PARTIAL') {
+                return { ...previous, partial: previous.partial + 1 };
+              }
+              return previous;
+            }
+            return {
+              ...previous,
+              paid: previous.paid + 1,
+              pending: Math.max(0, previous.pending - 1),
+              pendingAppointmentIds: previous.pendingAppointmentIds.filter((id) => id !== paidAppointment.id)
+            };
+          });
+        }
+        setPaymentSourceAppointmentId(null);
+        setAppointmentPageRefreshKey((key) => key + 1);
+      }
+
       setShowPaymentModal(false);
       paymentSubmitInFlightRef.current = false;
       paymentSubmissionKeyRef.current = null;
@@ -4562,6 +4706,12 @@ const App: React.FC = () => {
                 doctors={doctors}
                 treatmentTypes={treatmentTypes}
                 loading={appointmentPageLoading}
+                paymentReconciliation={appointmentPageReconciliation}
+                paymentReconciliationLoading={appointmentPageReconciliationLoading}
+                paymentReconciliationError={appointmentPageReconciliationError}
+                canRecordPayment={!isDoctor && auth.getSession()?.role !== 'doctor'}
+                onRecordPayment={(appointment) => { void handleRecordPaymentForAppointment(appointment); }}
+                recordingPaymentAppointmentId={recordingPaymentAppointmentId}
                 totalAppointments={appointmentPageTotal}
                 onQueryChange={loadAppointmentPage}
                 onRefresh={() => setAppointmentPageRefreshKey((key) => key + 1)}
@@ -6141,6 +6291,7 @@ const App: React.FC = () => {
                 setShowPaymentCategoryModal(false);
                 setPaymentServiceFeePreview(null);
                 setManualServiceFeeAmount('');
+                setPaymentSourceAppointmentId(null);
               }}
               className="absolute right-6 top-6 text-gray-300 transition-colors hover:text-gray-900"
             >
@@ -6329,6 +6480,7 @@ const App: React.FC = () => {
             setShowPaymentModal(false);
             paymentSubmitInFlightRef.current = false;
             paymentSubmissionKeyRef.current = null;
+            setPaymentSourceAppointmentId(null);
             setPaymentDraft({ treatments: [], amountTendered: 0, previousBalance: 0, currentTreatmentTotal: 0, serviceFeeAmount: 0, serviceFeeCategory: null, paymentMethod: 'UNKNOWN', splitPayment: false, allocations: [] });
           }}
         >
