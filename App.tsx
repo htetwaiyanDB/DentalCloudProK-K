@@ -88,7 +88,7 @@ import { resolvePaymentTreatmentsForCollection } from './utils/paymentTreatmentV
 import { toLocalDateInputValue } from './utils/patientCreationDate';
 import type { AuditFilter } from './utils/auditLogExport';
 import { filterAppointmentsForDoctor, resolveAppointmentQueryDoctorIds } from './utils/appointmentQueryScope';
-import { formatDoctorName } from './utils/doctorName';
+import { formatDoctorName, normalizeDoctorName } from './utils/doctorName';
 
 // Lazy Load Views
 const DashboardView = React.lazy(() => import('./components/DashboardView'));
@@ -2177,7 +2177,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePatientSelect = async (patient: Patient) => {
+  const handlePatientSelect = async (patient: Patient, defaultDoctorId?: string) => {
     const requestId = ++treatmentHistoryRequestRef.current;
     const medicineRequestId = ++medicineHistoryRequestRef.current;
     const paymentRequestId = ++paymentHistoryRequestRef.current;
@@ -2185,7 +2185,7 @@ const App: React.FC = () => {
     setSelectedPatient(patient);
     setLatestTreatmentBatch([]);
     setPaymentDraft({ treatments: [], amountTendered: 0, previousBalance: 0, currentTreatmentTotal: 0, serviceFeeAmount: 0, serviceFeeCategory: null, paymentMethod: 'UNKNOWN', splitPayment: false, allocations: [] });
-    setSelectedDoctorId('');
+    setSelectedDoctorId((defaultDoctorId || '').trim());
     setSelectedTeeth([]);
     setCurrentView('finance');
     setTreatmentHistory([]);
@@ -3945,7 +3945,16 @@ const App: React.FC = () => {
       return;
     }
 
-    handlePatientSelect(patient);
+    // Preselect the appointment doctor in Clinical Focus so the chart opens with
+    // the booked doctor already assigned. Staff can still change it in the dropdown.
+    const appointmentDoctorId = (appointment.doctor_id || '').trim();
+    const appointmentDoctorName = normalizeDoctorName(appointment.doctor_name).toLowerCase();
+    const appointmentDoctor = doctors.find((doctor) => appointmentDoctorId && doctor.id === appointmentDoctorId)
+      || (appointmentDoctorName
+        ? doctors.find((doctor) => normalizeDoctorName(doctor.name).toLowerCase() === appointmentDoctorName)
+        : undefined);
+
+    handlePatientSelect(patient, appointmentDoctor?.id || '');
   };
 
   const handleEditAppointmentPatientInfo = (appointment: Appointment) => {
