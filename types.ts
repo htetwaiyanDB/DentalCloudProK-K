@@ -68,6 +68,7 @@ export interface ClinicalRecord {
   location_id: string;
   patient_id: string;
   patient_name?: string; // Joined field for global view
+  appointment_id?: string | null; // Visit/appointment this treatment was recorded for
   patient_unique_id?: string; // Joined field for global view
   patient_type?: string | null; // Joined field for audit log patient type display
   patient_balance?: number; // Joined field for audit log balance/debt display
@@ -373,6 +374,17 @@ export interface DoctorProfileSaveInput extends Partial<Doctor> {
   custom_commissions?: DoctorTreatmentCommission[];
 }
 
+export type AppointmentPaymentStatus = 'PAID' | 'PARTIAL' | 'PENDING' | 'NOT_APPLICABLE';
+
+export interface AppointmentPaymentReconciliation {
+  date: string;
+  completed: number;
+  paid: number;
+  partial: number;
+  pending: number;
+  pendingAppointmentIds: string[];
+}
+
 export interface Appointment {
   id: string;
   location_id: string;
@@ -385,6 +397,13 @@ export interface Appointment {
   time: string; // HH:MM
   type: string;
   status: 'Scheduled' | 'Completed' | 'Cancelled';
+  // Derived from completed-visit treatments and recorded payments. It is not a
+  // stored appointment column, so historical rows without a payment record are
+  // reported as PENDING instead of being treated as paid.
+  payment_status?: AppointmentPaymentStatus;
+  visit_total?: number;
+  paid_amount?: number;
+  payment_due?: number;
   cancellation_outcome?: CancellationOutcome | null;
   completed_later_appointment_id?: string | null;
   notes?: string;

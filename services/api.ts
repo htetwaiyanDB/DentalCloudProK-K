@@ -1,6 +1,6 @@
 import { supabase, supabaseUrl, supabaseAnonKey } from './supabase';
 import * as tus from 'tus-js-client';
-import { Patient, Appointment, AppointmentRescheduleLog, ClinicalRecord, TreatmentType, PatientFile, Doctor, DoctorSchedule, DoctorScheduleInput, User, Medicine, MedicineSale, Location, LoyaltyRule, LoyaltyTransaction, Expense, Message, Conversation, ScheduledTask, S3Settings, PatientType, AppointmentType, DoctorTreatmentCommission, PaymentMethod, PaymentRecord, PaymentReceiptSnapshot, ReceiptPreferences, ClinicalFeeSettings, ClinicalFeeCompletionResult, ActiveStaffMonitorEntry, PaymentCorrection, PaymentAllocation, AuditLogSourceType, PatientMaterialCost, PatientMaterialCostInput, TreatmentCostSummary, TreatmentCostType, MaterialLabCostPreset, MaterialLabCostPresetInput, CancellationOutcome, DoctorCorrectionPreview, DoctorCorrectionResult } from '../types';
+import { Patient, Appointment, AppointmentRescheduleLog, ClinicalRecord, TreatmentType, PatientFile, Doctor, DoctorSchedule, DoctorScheduleInput, User, Medicine, MedicineSale, Location, LoyaltyRule, LoyaltyTransaction, Expense, Message, Conversation, ScheduledTask, S3Settings, PatientType, AppointmentType, DoctorTreatmentCommission, PaymentMethod, PaymentRecord, PaymentReceiptSnapshot, ReceiptPreferences, ClinicalFeeSettings, ClinicalFeeCompletionResult, ActiveStaffMonitorEntry, PaymentCorrection, PaymentAllocation, AuditLogSourceType, PatientMaterialCost, PatientMaterialCostInput, TreatmentCostSummary, TreatmentCostType, MaterialLabCostPreset, MaterialLabCostPresetInput, CancellationOutcome, DoctorCorrectionPreview, DoctorCorrectionResult, AppointmentPaymentReconciliation } from '../types';
 import { AUTO_ONP_PATIENT_TYPE_NAME, DEFAULT_PATIENT_TYPE_NAME, DEFAULT_PATIENT_TYPE_OPTIONS, DOCTOR_DASHBOARD_TABS, FULL_ACCESS_TAB_PERMISSIONS } from '../constants';
 import { resolveAllowedTabs } from '../utils/permissions';
 import { EmailSettings, loadEmailSettingsAsync, saveEmailSettingsAsync } from '../utils/emailSettings';
@@ -23,6 +23,7 @@ import { normalizeMaterialCostPresetInputs, sortMaterialCostPresets } from '../u
 import { buildDoctorDirectWritePayload } from '../utils/doctorWritePayload';
 import { excludeProtectedDoctorChange } from '../utils/appointmentDoctorUpdate';
 import { getPatientAuthConflictMessage } from '../utils/patientAuthConflict';
+import { buildAppointmentPaymentReconciliation, summarizeAppointmentPayment, type AppointmentPaymentTreatment } from '../utils/appointmentPaymentStatus';
 
 let usersAllowedTabsSupport: boolean | null = null;
 let usersDoctorIdSupport: boolean | null = null;
@@ -1567,6 +1568,107 @@ const resolveActiveSupabaseStorage = async (): Promise<import('../types').Supaba
   }
 };
 
+// Appointment payment reconciliation reads only the existing payments and
+// treatments tables. Appointment status stays the source of truth for the
+// visit workflow; payment status is derived and never stored twice.
+const APPOINTMENT_PAYMENT_QUERY_CHUNK_SIZE = 20;
+
+const fetchAppointmentPaymentContext = async (
+  appointments: Appointment[],
+  locationId?: string
+): Promise<{ treatments: AppointmentPaymentTreatment[]; payments: PaymentRecord[] }> => {
+  const patientIds = Array.from(new Set(
+    appointments
+      .filter((appointment) => appointment.status === 'Completed' && appointment.patient_id)
+      .map((appointment) => String(appointment.patient_id))
+  ));
+  if (patientIds.length === 0) return { treatments: [], payments: [] };
+
+  const treatments: AppointmentPaymentTreatment[] = [];
+  const payments: PaymentRecord[] = [];
+
+  for (const patientIdChunk of chunkUniqueIds(patientIds, APPOINTMENT_PAYMENT_QUERY_CHUNK_SIZE)) {
+    const buildTreatmentQuery = (includeAppointmentId: boolean) => (from: number, to: number) => {
+      let query = supabase
+        .from('treatments')
+        .select(`id, patient_id, date, cost${includeAppointmentId ? ', appointment_id' : ''}`)
+        .in('patient_id', patientIdChunk)
+        .order('date')
+        .order('id')
+        .range(from, to);
+      if (locationId) query = query.eq('location_id', locationId);
+      return query;
+    };
+
+    let treatmentResult = await fetchAllRows<any>(buildTreatmentQuery(true));
+    if (treatmentResult.error && isMissingColumnError(treatmentResult.error, 'appointment_id')) {
+      treatmentResult = await fetchAllRows<any>(buildTreatmentQuery(false));
+    }
+    if (treatmentResult.error) throw treatmentResult.error;
+    treatments.push(...(treatmentResult.data || []).map((row: any) => ({
+      id: row.id,
+      patient_id: row.patient_id,
+      date: row.date,
+      cost: Number(row.cost || 0),
+      appointment_id: row.appointment_id ?? null
+    })));
+
+    const buildPaymentQuery = (filterVoidedAt: boolean) => (from: number, to: number) => {
+      let query = supabase
+        .from('payments')
+        .select('id, location_id, patient_id, amount, original_amount, cleared_amount, balance_before, remaining_balance, payment_method, payment_status, treatment_ids, receipt_number, receipt_snapshot, payment_date, created_at, voided_at, void_reason, voided_by, voided_amount, created_by_user_id, created_by_user_name')
+        .in('patient_id', patientIdChunk)
+        .order('payment_date')
+        .order('id')
+        .range(from, to);
+      if (locationId) query = query.eq('location_id', locationId);
+      if (filterVoidedAt) query = query.is('voided_at', null);
+      return query;
+    };
+
+    let paymentResult = await fetchAllRows<any>(buildPaymentQuery(true));
+    if (paymentResult.error && isMissingColumnError(paymentResult.error, 'voided_at')) {
+      paymentResult = await fetchAllRows<any>(buildPaymentQuery(false));
+    }
+    if (paymentResult.error) {
+      if (isMissingRelationError(paymentResult.error, 'payments')) continue;
+      throw paymentResult.error;
+    }
+    payments.push(...(paymentResult.data || []).map(mapPaymentRow).filter((payment) => !payment.voidedAt));
+  }
+
+  return { treatments, payments };
+};
+
+
+const addAppointmentPaymentStatus = async (
+  appointments: Appointment[],
+  locationId?: string
+): Promise<Appointment[]> => {
+  const completed = appointments.filter(
+    (appointment) => appointment.status === 'Completed' && appointment.patient_id
+  );
+  if (completed.length === 0) return appointments;
+
+  try {
+    const { treatments, payments } = await fetchAppointmentPaymentContext(completed, locationId);
+    const summaryById = new Map(completed.map((appointment) => [
+      appointment.id,
+      summarizeAppointmentPayment({ appointment, treatments, payments })
+    ]));
+    return appointments.map((appointment) => {
+      const summary = summaryById.get(appointment.id);
+      return summary ? { ...appointment, ...summary } : appointment;
+    });
+  } catch (error) {
+    // Older installations may not have the optional payment relations. Keep
+    // the appointment list usable and simply omit derived payment badges.
+    console.warn('Could not load appointment payment status:', error);
+    return appointments;
+  }
+};
+
+
 export const api = {
   locations: {
     getAll: async (): Promise<Location[]> => {
@@ -2695,6 +2797,7 @@ export const api = {
         search?: string;
         doctorIds?: string[];
         treatment?: string;
+        includePaymentStatus?: boolean;
       } = {}
     ): Promise<{ appointments: Appointment[]; total: number }> => {
       const pageSize = Math.min(Math.max(options.pageSize || 100, 1), 1000);
@@ -2751,15 +2854,52 @@ export const api = {
       }
       if (error) throw error;
 
+      const mappedAppointments: Appointment[] = (data || []).map((apt: any) => ({
+        ...apt,
+        patient_name: apt.patients?.name || apt.guest_name || 'Unknown',
+        patient_balance: apt.patients?.balance ?? null,
+        doctor_name: getAppointmentDoctorDisplayName(apt)
+      }));
+
       return {
-        appointments: (data || []).map((apt: any) => ({
-          ...apt,
-          patient_name: apt.patients?.name || apt.guest_name || 'Unknown',
-          patient_balance: apt.patients?.balance ?? null,
-          doctor_name: getAppointmentDoctorDisplayName(apt)
-        })),
+        appointments: options.includePaymentStatus === false
+          ? mappedAppointments
+          : await addAppointmentPaymentStatus(mappedAppointments, locationId),
         total: count || 0
       };
+    },
+    getPaymentReconciliation: async (
+      locationId: string | undefined,
+      options: { date: string; doctorIds?: string[] }
+    ): Promise<AppointmentPaymentReconciliation> => {
+      const date = trimRequired(options.date, 'Reconciliation date');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new Error('A valid reconciliation date (YYYY-MM-DD) is required.');
+      }
+
+      const { data, error } = await fetchAllRows<any>((from, to) => {
+        let query = supabase
+          .from('appointments')
+          .select('id, location_id, patient_id, doctor_id, date, time, type, status')
+          .eq('date', date)
+          .eq('status', 'Completed')
+          .order('time')
+          .order('id')
+          .range(from, to);
+        if (locationId) query = query.eq('location_id', locationId);
+        if (options.doctorIds?.length) query = query.in('doctor_id', options.doctorIds);
+        return query;
+      });
+      if (error) throw error;
+
+      const dayAppointments = (data || []) as Appointment[];
+      const { treatments, payments } = await fetchAppointmentPaymentContext(dayAppointments, locationId);
+      return buildAppointmentPaymentReconciliation({
+        appointments: dayAppointments,
+        treatments,
+        payments,
+        date
+      });
     },
     getAll: async (locationId?: string, options?: {
       dateFrom?: string;
