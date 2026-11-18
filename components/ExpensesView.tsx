@@ -249,7 +249,7 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
 
         {/* Search and Filter */}
         <div className="mt-5 flex flex-col gap-3 xl:flex-row xl:items-end">
-          <div className="relative w-full xl:w-[360px] xl:flex-none">
+          <div className="relative w-full xl:w-[280px] xl:flex-none">
             <input
               type="text"
               placeholder="Search by description, category, or date..."
