@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Edit2, Trash2, Loader2, BarChart3, Eye, TrendingDown, TrendingUp, DollarSign, Calendar, Tag, RotateCw } from 'lucide-react';
+import { Plus, Edit2, Trash2, Loader2, BarChart3, Eye, TrendingDown, DollarSign, Calendar, Tag, RotateCw } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, Cell } from 'recharts';
 import { ClinicalRecord, Expense, Location, MedicineSale } from '../types';
 import { formatCurrency, Currency } from '../utils/currency';
@@ -8,6 +8,9 @@ import { exportExpensesToExcel } from '../utils/excelExport';
 import { Modal } from './Shared';
 import Pagination from './Pagination';
 import ExportMenu from './ExportMenu';
+import { toLocalISODate } from '../utils/auditLogFilters';
+
+type ExpenseDateQuickFilter = 'today' | 'tomorrow' | 'all' | 'custom';
 
 interface ExpensesViewProps {
   expenses: Expense[];
@@ -42,7 +45,47 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const todayKey = useMemo(() => toLocalISODate(new Date()), []);
+  const [dateFrom, setDateFrom] = useState(todayKey);
+  const [dateTo, setDateTo] = useState(todayKey);
+  const [dateQuickFilter, setDateQuickFilter] = useState<ExpenseDateQuickFilter>('today');
   const itemsPerPage = 10;
+  const isTodayRange = dateFrom === todayKey && dateTo === todayKey;
+  const tomorrowKey = useMemo(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return toLocalISODate(tomorrow);
+  }, []);
+  const allExpenseDates = useMemo(() => expenses.map(expense => expense.date.slice(0, 10)).filter(Boolean), [expenses]);
+  const allDateFrom = allExpenseDates.length ? allExpenseDates.reduce((earliest, date) => date < earliest ? date : earliest) : todayKey;
+  const allDateTo = allExpenseDates.length ? allExpenseDates.reduce((latest, date) => date > latest ? date : latest) : todayKey;
+
+  const handleDateFromChange = (value: string) => {
+    setDateFrom(value);
+    if (value > dateTo) setDateTo(value);
+    setDateQuickFilter('custom');
+    setCurrentPage(1);
+  };
+
+  const handleDateToChange = (value: string) => {
+    setDateTo(value);
+    if (value < dateFrom) setDateFrom(value);
+    setDateQuickFilter('custom');
+    setCurrentPage(1);
+  };
+
+  const applyQuickDateFilter = (filter: Exclude<ExpenseDateQuickFilter, 'custom'>) => {
+    if (filter === 'all') {
+      setDateFrom(allDateFrom);
+      setDateTo(allDateTo);
+    } else {
+      const date = filter === 'today' ? todayKey : tomorrowKey;
+      setDateFrom(date);
+      setDateTo(date);
+    }
+    setDateQuickFilter(filter);
+    setCurrentPage(1);
+  };
 
   const categories = useMemo(() => {
     const unique = new Set<string>();
@@ -60,9 +103,10 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
         || expense.category.toLowerCase().includes(term)
         || expense.date.toLowerCase().includes(term);
       const matchesCategory = categoryFilter === 'all' || expense.category === categoryFilter;
-      return matchesTerm && matchesCategory;
+      const matchesDateRange = expense.date >= dateFrom && expense.date <= dateTo;
+      return matchesTerm && matchesCategory && matchesDateRange;
     });
-  }, [expenses, searchTerm, categoryFilter]);
+  }, [expenses, searchTerm, categoryFilter, dateFrom, dateTo]);
 
   const paginatedExpenses = useMemo(() => {
     if (showAll) return filteredExpenses;
@@ -74,77 +118,46 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
     setCurrentPage(1);
   }, [expenses]);
 
-  const today = new Date();
-  const todayKey = today.toISOString().split('T')[0];
-  const monthKey = todayKey.slice(0, 7);
-  const weekStart = new Date(today);
-  weekStart.setDate(weekStart.getDate() - 6);
-  const weekStartKey = weekStart.toISOString().split('T')[0];
-
-  const dailyTotal = expenses
-    .filter(exp => exp.date === todayKey)
-    .reduce((sum, exp) => sum + (exp.amount || 0), 0);
-  const weeklyTotal = expenses
-    .filter(exp => exp.date >= weekStartKey)
-    .reduce((sum, exp) => sum + (exp.amount || 0), 0);
-  const monthlyTotal = expenses
-    .filter(exp => exp.date.startsWith(monthKey))
-    .reduce((sum, exp) => sum + (exp.amount || 0), 0);
-  const totalAll = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
-
-  const dailyTreatmentRevenue = treatmentRecords
-    .filter(tr => tr.date === todayKey)
-    .reduce((sum, tr) => sum + (tr.cost || 0), 0);
-  const weeklyTreatmentRevenue = treatmentRecords
-    .filter(tr => tr.date >= weekStartKey)
-    .reduce((sum, tr) => sum + (tr.cost || 0), 0);
-  const monthlyTreatmentRevenue = treatmentRecords
-    .filter(tr => tr.date.startsWith(monthKey))
-    .reduce((sum, tr) => sum + (tr.cost || 0), 0);
-
-  const dailyMedicineRevenue = medicineSales
-    .filter(sale => sale.date === todayKey)
+  const selectedExpensesTotal = filteredExpenses.reduce((sum, expense) => sum + (expense.amount || 0), 0);
+  const selectedTreatmentRevenue = treatmentRecords
+    .filter(record => record.date >= dateFrom && record.date <= dateTo)
+    .reduce((sum, record) => sum + (record.cost || 0), 0);
+  const selectedMedicineRevenue = medicineSales
+    .filter(sale => sale.date >= dateFrom && sale.date <= dateTo)
     .reduce((sum, sale) => sum + (sale.total_price || 0), 0);
-  const weeklyMedicineRevenue = medicineSales
-    .filter(sale => sale.date >= weekStartKey)
-    .reduce((sum, sale) => sum + (sale.total_price || 0), 0);
-  const monthlyMedicineRevenue = medicineSales
-    .filter(sale => sale.date.startsWith(monthKey))
-    .reduce((sum, sale) => sum + (sale.total_price || 0), 0);
-
-  const dailyRevenue = dailyTreatmentRevenue + dailyMedicineRevenue;
-  const weeklyRevenue = weeklyTreatmentRevenue + weeklyMedicineRevenue;
-  const monthlyRevenue = monthlyTreatmentRevenue + monthlyMedicineRevenue;
-
-  const dailyProfit = dailyRevenue - dailyTotal;
-  const weeklyProfit = weeklyRevenue - weeklyTotal;
-  const monthlyProfit = monthlyRevenue - monthlyTotal;
+  const selectedRevenue = selectedTreatmentRevenue + selectedMedicineRevenue;
+  const selectedProfit = selectedRevenue - selectedExpensesTotal;
 
   const hasFinancialData = expenses.length > 0 || treatmentRecords.length > 0 || medicineSales.length > 0;
 
   const monthlyChartData = useMemo(() => {
-    const now = new Date();
     const data: { key: string; label: string; total: number }[] = [];
-    for (let i = 5; i >= 0; i -= 1) {
-      const point = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const key = point.toISOString().slice(0, 7);
+    const start = new Date(`${dateFrom}T00:00:00`);
+    const end = new Date(`${dateTo}T00:00:00`);
+    const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+    const endMonth = new Date(end.getFullYear(), end.getMonth(), 1);
+
+    while (cursor <= endMonth) {
+      const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+      const point = new Date(cursor);
       const label = point.toLocaleString('default', { month: 'short' });
       data.push({
         key,
         label: `${label} ${point.getFullYear()}`,
         total: 0
       });
+      cursor.setMonth(cursor.getMonth() + 1);
     }
-    expenses.forEach(exp => {
+    filteredExpenses.forEach(exp => {
       const entry = data.find(item => exp.date.startsWith(item.key));
       if (entry) entry.total += exp.amount || 0;
     });
     return data;
-  }, [expenses]);
+  }, [filteredExpenses, dateFrom, dateTo]);
 
   const categoryChartData = useMemo(() => {
     const totals = new Map<string, number>();
-    expenses.forEach(exp => {
+    filteredExpenses.forEach(exp => {
       const key = exp.category || 'Uncategorized';
       totals.set(key, (totals.get(key) || 0) + (exp.amount || 0));
     });
@@ -152,14 +165,14 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
       .map(([category, total]) => ({ category, total }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 6);
-  }, [expenses]);
+  }, [filteredExpenses]);
 
   const handleDownloadPDF = () => {
-    exportExpensesToPDF(expenses, currency);
+    exportExpensesToPDF(filteredExpenses, currency);
   };
 
   const handleDownloadExcel = async () => {
-    await exportExpensesToExcel(expenses, currency);
+    await exportExpensesToExcel(filteredExpenses, currency);
   };
 
   const openDetailModal = (expense: Expense) => {
@@ -219,7 +232,7 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
               Refresh
             </button>
             <ExportMenu
-              disabled={expenses.length === 0}
+              disabled={filteredExpenses.length === 0}
               onExportPDF={handleDownloadPDF}
               onExportExcel={handleDownloadExcel}
               className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-700"
@@ -235,8 +248,8 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
         </div>
 
         {/* Search and Filter */}
-        <div className="mt-5 flex flex-col sm:flex-row gap-3">
-          <div className="relative flex-1">
+        <div className="mt-5 flex flex-col gap-3 xl:flex-row xl:items-end">
+          <div className="relative w-full xl:w-[360px] xl:flex-none">
             <input
               type="text"
               placeholder="Search by description, category, or date..."
@@ -264,6 +277,49 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
               <option key={category} value={category}>{category}</option>
             ))}
           </select>
+          <div className="grid grid-cols-2 gap-2 sm:w-auto">
+            <label className="min-w-0 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+              From
+              <input
+                type="date"
+                value={dateFrom}
+                max={dateTo}
+                onChange={(event) => handleDateFromChange(event.target.value)}
+                className="mt-1 w-full min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-slate-800 transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 sm:w-36"
+              />
+            </label>
+            <label className="min-w-0 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+              To
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom}
+                onChange={(event) => handleDateToChange(event.target.value)}
+                className="mt-1 w-full min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-slate-800 transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 sm:w-36"
+              />
+            </label>
+          </div>
+          <div className="grid w-full grid-cols-3 rounded-xl border border-slate-200 bg-slate-50 p-1 sm:w-[206px]">
+            {([
+              { value: 'all', label: 'All' },
+              { value: 'tomorrow', label: 'Tomorrow' },
+              { value: 'today', label: 'Today' }
+            ] as const).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => applyQuickDateFilter(option.value)}
+                aria-pressed={dateQuickFilter === option.value}
+                className={`min-h-9 rounded-lg px-2 py-2 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${
+                  dateQuickFilter === option.value
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -276,10 +332,10 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
                 <div className="p-2 bg-white rounded-lg shadow-sm">
                   <Calendar className="w-5 h-5 text-blue-600" />
                 </div>
-                <span className="text-xs font-semibold text-blue-600 bg-white px-2.5 py-1 rounded-full">Today</span>
+                <span className="text-xs font-semibold text-blue-600 bg-white px-2.5 py-1 rounded-full">{isTodayRange ? 'Today' : 'Selected'}</span>
               </div>
-              <p className="text-lg font-bold text-gray-900">{formatCurrency(dailyTotal, currency)}</p>
-              <p className="text-xs text-gray-600 mt-1">Daily expenses</p>
+              <p className="text-lg font-bold text-gray-900">{formatCurrency(selectedExpensesTotal, currency)}</p>
+              <p className="text-xs text-gray-600 mt-1">Selected-period expenses</p>
             </div>
 
             <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-2xl p-5 border border-purple-200/60">
@@ -287,10 +343,10 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
                 <div className="p-2 bg-white rounded-lg shadow-sm">
                   <Calendar className="w-5 h-5 text-purple-600" />
                 </div>
-                <span className="text-xs font-semibold text-purple-600 bg-white px-2.5 py-1 rounded-full">This Month</span>
+                <span className="text-xs font-semibold text-purple-600 bg-white px-2.5 py-1 rounded-full">Revenue</span>
               </div>
-              <p className="text-lg font-bold text-gray-900">{formatCurrency(monthlyTotal, currency)}</p>
-              <p className="text-xs text-gray-600 mt-1">Monthly expenses</p>
+              <p className="text-lg font-bold text-gray-900">{formatCurrency(selectedRevenue, currency)}</p>
+              <p className="text-xs text-gray-600 mt-1">Treatments + medicine</p>
             </div>
 
             <div className="bg-gradient-to-br from-orange-50 to-orange-100 rounded-2xl p-5 border border-orange-200/60">
@@ -298,10 +354,10 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
                 <div className="p-2 bg-white rounded-lg shadow-sm">
                   <DollarSign className="w-5 h-5 text-orange-600" />
                 </div>
-                <span className="text-xs font-semibold text-orange-600 bg-white px-2.5 py-1 rounded-full">All Time</span>
+                <span className="text-xs font-semibold text-orange-600 bg-white px-2.5 py-1 rounded-full">Profit</span>
               </div>
-              <p className="text-lg font-bold text-gray-900">{formatCurrency(totalAll, currency)}</p>
-              <p className="text-xs text-gray-600 mt-1">Total expenses</p>
+              <p className={`text-lg font-bold ${selectedProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{formatCurrency(selectedProfit, currency)}</p>
+              <p className="text-xs text-gray-600 mt-1">Revenue minus expenses</p>
             </div>
 
             <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl p-5 border border-gray-200/60">
@@ -309,42 +365,10 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
                 <div className="p-2 bg-white rounded-lg shadow-sm">
                   <Tag className="w-5 h-5 text-gray-600" />
                 </div>
-                <span className="text-xs font-semibold text-gray-600 bg-white px-2.5 py-1 rounded-full">Count</span>
+                <span className="text-xs font-semibold text-gray-600 bg-white px-2.5 py-1 rounded-full">Filtered</span>
               </div>
-              <p className="text-lg font-bold text-gray-900">{expenses.length}</p>
-              <p className="text-xs text-gray-600 mt-1">Total records</p>
-            </div>
-          </div>
-
-          {/* Profit & Revenue Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-white rounded-2xl p-5 border border-gray-200/60 shadow-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <TrendingUp className="w-4 h-4 text-emerald-600" />
-                <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Monthly Revenue</p>
-              </div>
-              <p className="text-lg font-bold text-gray-900">{formatCurrency(monthlyRevenue, currency)}</p>
-              <p className="text-xs text-gray-500 mt-1">Treatments + medicine</p>
-            </div>
-
-            <div className="bg-white rounded-2xl p-5 border border-gray-200/60 shadow-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <TrendingDown className="w-4 h-4 text-red-600" />
-                <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Monthly Expenses</p>
-              </div>
-              <p className="text-lg font-bold text-gray-900">{formatCurrency(monthlyTotal, currency)}</p>
-              <p className="text-xs text-gray-500 mt-1">Operating costs</p>
-            </div>
-
-            <div className="bg-white rounded-2xl p-5 border border-gray-200/60 shadow-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <DollarSign className={`w-4 h-4 ${monthlyProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`} />
-                <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Net Profit</p>
-              </div>
-              <p className={`text-lg font-bold ${monthlyProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                {formatCurrency(monthlyProfit, currency)}
-              </p>
-              <p className="text-xs text-gray-500 mt-1">Revenue minus expenses</p>
+              <p className="text-lg font-bold text-gray-900">{filteredExpenses.length}</p>
+              <p className="text-xs text-gray-600 mt-1">Expense records</p>
             </div>
           </div>
 
@@ -356,8 +380,8 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
                   <BarChart3 className="w-5 h-5 text-blue-600" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-gray-900">Monthly Expenses Trend</h3>
-                  <p className="text-xs text-gray-500">Last 6 months breakdown</p>
+                  <h3 className="text-base font-bold text-gray-900">Expenses Trend</h3>
+                  <p className="text-xs text-gray-500">Selected period, shown by month</p>
                 </div>
               </div>
               <div className="h-[260px]">
@@ -402,7 +426,7 @@ const ExpensesView: React.FC<ExpensesViewProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-gray-900">Top Expense Categories</h3>
-                  <p className="text-xs text-gray-500">Highest spending categories</p>
+                  <p className="text-xs text-gray-500">Highest spending in the selected period</p>
                 </div>
               </div>
               <div className="h-[260px]">
